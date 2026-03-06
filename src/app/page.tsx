@@ -3,7 +3,7 @@ import { Section } from "@/components/ui/section";
 import { Card, CardImage, CardBody } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { projects, architects, brands } from "@/lib/mock-data";
-import { ArrowRight, Sparkles, Search, Tag, BarChart3 } from "lucide-react";
+import { ArrowRight, Sparkles, Search, Tag, BarChart3, Activity, TrendingUp, Network, LayoutGrid } from "lucide-react";
 
 export default function HomePage() {
   return (
@@ -13,30 +13,30 @@ export default function HomePage() {
         <div className="mx-auto max-w-7xl px-6 py-32">
           <div className="max-w-2xl">
             <p className="mb-4 text-sm font-medium uppercase tracking-widest text-neutral-400">
-              AI-Powered Architecture Platform
+              ArchiPro Intelligence Platform
             </p>
             <h1 className="text-5xl font-semibold leading-[1.1] tracking-tight sm:text-6xl">
-              Design smarter.
+              See what&apos;s driving
               <br />
-              Build better.
+              architecture.
             </h1>
             <p className="mt-6 text-lg leading-relaxed text-neutral-300">
-              Connect with top architects, discover curated products, and let AI
-              guide your next build — from brief to completion.
+              Live activity feeds, architect influence scoring, product momentum
+              tracking, and collaborative design boards — all in one platform.
             </p>
             <div className="mt-10 flex flex-wrap gap-4">
               <Link
-                href="/brief"
+                href="/activity"
                 className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-medium text-foreground transition-opacity hover:opacity-90"
               >
-                <Sparkles size={16} />
-                Generate AI Brief
+                <Activity size={16} />
+                Live Activity Feed
               </Link>
               <Link
-                href="/discover"
+                href="/momentum"
                 className="inline-flex items-center gap-2 rounded-full border border-neutral-600 px-6 py-3 text-sm font-medium text-white transition-colors hover:border-white"
               >
-                Explore Projects
+                Product Momentum
                 <ArrowRight size={16} />
               </Link>
             </div>
@@ -50,10 +50,10 @@ export default function HomePage() {
       <section className="border-b border-border bg-card">
         <div className="mx-auto grid max-w-7xl gap-0 divide-y divide-border sm:grid-cols-4 sm:divide-x sm:divide-y-0">
           {[
-            { icon: Sparkles, label: "AI Brief Generator", desc: "Answer questions, get a design brief" },
-            { icon: Search, label: "Smart Discovery", desc: "Find projects, architects & products" },
-            { icon: Tag, label: "Product Tagging", desc: "Link products to real projects" },
-            { icon: BarChart3, label: "Analytics", desc: "Track views & engagement" },
+            { icon: Activity, label: "Live Activity", desc: "Real-time saves, downloads & enquiries" },
+            { icon: TrendingUp, label: "Product Momentum", desc: "Trending products & growth signals" },
+            { icon: Network, label: "Influence Network", desc: "Map product-architect connections" },
+            { icon: LayoutGrid, label: "Design Boards", desc: "Collect, organise & specify products" },
           ].map((f) => (
             <div key={f.label} className="px-6 py-8">
               <f.icon size={20} className="text-muted" />
