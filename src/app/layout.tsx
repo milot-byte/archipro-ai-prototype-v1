@@ -1,11 +1,10 @@
 import type { Metadata } from "next";
 import "@/styles/globals.css";
-import { Navbar } from "@/components/ui/navbar";
-import { Footer } from "@/components/ui/footer";
+import { Sidebar } from "@/components/ui/sidebar";
 
 export const metadata: Metadata = {
-  title: "ArchiPro AI — Architecture Platform",
-  description: "AI-powered architecture platform connecting homeowners, architects, and brands",
+  title: "ArchiPro — Architecture Intelligence Platform",
+  description: "Your logged-in architecture workspace — projects, boards, specs, and intelligence",
 };
 
 export default function RootLayout({
@@ -15,10 +14,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body>
-        <Navbar />
-        <main className="min-h-screen">{children}</main>
-        <Footer />
+      <body className="flex min-h-screen">
+        <Sidebar />
+        <main className="ml-[240px] flex-1 min-h-screen bg-background transition-all duration-200">
+          {children}
+        </main>
       </body>
     </html>
   );
