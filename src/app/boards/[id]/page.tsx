@@ -184,6 +184,7 @@ export default function BoardDetailPage({ params }: { params: Promise<{ id: stri
 
         {/* Grid view */}
         {viewMode === "grid" ? (
+          <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {boardProducts.map((product) => {
               const isSelected = selectedProducts.has(product!.id);
@@ -239,6 +240,42 @@ export default function BoardDetailPage({ params }: { params: Promise<{ id: stri
               <span className="mt-2 text-[12px] font-medium text-muted">Add product</span>
             </button>
           </div>
+
+          {/* AI Recommendations */}
+          <div className="mt-8 rounded-2xl border border-border bg-white p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-foreground">
+                <span className="text-[10px] font-bold text-white">AI</span>
+              </div>
+              <div>
+                <h3 className="text-[14px] font-semibold">Recommended Products</h3>
+                <p className="text-[11px] text-muted">Based on the products in this board, you might also consider:</p>
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {(() => {
+                const currentIds = new Set(board.productIds);
+                const recs = products.filter(p => !currentIds.has(p.id)).slice(0, 3);
+                return recs.map((rec) => (
+                  <div key={rec.id} className="flex items-center gap-3 rounded-xl border border-dashed border-border p-3 hover:border-foreground/20 transition-colors">
+                    <div className="h-10 w-10 rounded-lg bg-surface shrink-0 flex items-center justify-center">
+                      <span className="text-[8px] text-muted">{rec.category}</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[10px] text-muted">{rec.brand}</p>
+                      <p className="text-[12px] font-semibold truncate">{rec.name}</p>
+                      <p className="text-[11px] font-medium">{rec.price}</p>
+                    </div>
+                    <button className="shrink-0 rounded-lg bg-surface p-1.5 text-muted hover:bg-foreground hover:text-white transition-colors">
+                      <Plus size={12} />
+                    </button>
+                  </div>
+                ));
+              })()}
+            </div>
+            <p className="mt-3 text-[10px] text-muted text-center">Recommendations are based on product category compatibility, architect usage patterns, and project context.</p>
+          </div>
+          </>
         ) : (
           /* List view */
           <div className="rounded-2xl border border-border bg-white overflow-hidden">

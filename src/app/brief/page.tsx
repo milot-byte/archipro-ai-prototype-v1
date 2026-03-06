@@ -113,6 +113,81 @@ export default function BriefPage() {
               })}
             </div>
           </div>
+          {/* AI Product Recommendations */}
+          <div className="mt-8 rounded-2xl border border-border bg-white p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-foreground">
+                <span className="text-[10px] font-bold text-white">AI</span>
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold">AI-Matched Products</h3>
+                <p className="text-xs text-muted">Products selected based on your brief preferences</p>
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              {[
+                { name: "Engineered Oak Panel", brand: "DuraLux Surfaces", price: "$185/m²", match: 96, reason: "Matches contemporary style + natural materials preference" },
+                { name: "Pendant Light — Arc", brand: "Flōra Lighting", price: "$320", match: 92, reason: "Top-rated for open-plan living spaces with natural light" },
+                { name: "Matte Black Pull Handle", brand: "Akaroa Kitchens", price: "$48", match: 88, reason: "Minimalist hardware aligned with your clean-line aesthetic" },
+                { name: "Composite Deck Board", brand: "TerraRange", price: "$72/m", match: 85, reason: "Indoor-outdoor flow priority + sustainable material" },
+              ].map((rec) => (
+                <div key={rec.name} className="rounded-xl border border-border p-3 hover:border-foreground/10 transition-colors">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className="text-[10px] font-medium uppercase tracking-wider text-muted">{rec.brand}</p>
+                      <p className="text-[13px] font-semibold mt-0.5">{rec.name}</p>
+                      <p className="text-[13px] font-semibold mt-0.5">{rec.price}</p>
+                    </div>
+                    <span className="flex items-center gap-1 rounded-full bg-emerald-light px-2 py-0.5 text-[10px] font-semibold text-emerald">
+                      {rec.match}% match
+                    </span>
+                  </div>
+                  <p className="mt-2 text-[11px] text-muted leading-relaxed">{rec.reason}</p>
+                  <div className="mt-2 flex gap-1.5">
+                    <button className="rounded-lg bg-surface px-2.5 py-1 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">View Product</button>
+                    <button className="rounded-lg bg-surface px-2.5 py-1 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">Add to Board</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* AI Architect Recommendations */}
+          <div className="mt-4 rounded-2xl border border-border bg-white p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-foreground">
+                <span className="text-[10px] font-bold text-white">AI</span>
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold">Recommended Architects</h3>
+                <p className="text-xs text-muted">Professionals whose work aligns with your brief</p>
+              </div>
+            </div>
+            <div className="space-y-3">
+              {[
+                { name: "Elena Vasquez", firm: "Vasquez Studio", score: 94, match: 95, reason: "Sustainable residential specialist with indoor-outdoor flow expertise" },
+                { name: "Oliver Park", firm: "Park Studio", score: 59, match: 88, reason: "Minimalist urban housing expert — compact efficient design" },
+              ].map((arch) => (
+                <div key={arch.name} className="flex items-center gap-4 rounded-xl border border-border p-3 hover:border-foreground/10 transition-colors">
+                  <div className="h-10 w-10 rounded-full bg-surface flex items-center justify-center shrink-0">
+                    <span className="text-[10px] font-semibold text-muted">{arch.name.split(" ").map(n => n[0]).join("")}</span>
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="text-[13px] font-semibold">{arch.name}</p>
+                      <span className="text-[11px] text-muted">{arch.firm}</span>
+                    </div>
+                    <p className="text-[11px] text-muted mt-0.5">{arch.reason}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="flex items-center gap-1 rounded-full bg-emerald-light px-2 py-0.5 text-[10px] font-semibold text-emerald">{arch.match}% match</span>
+                    <p className="text-[10px] text-muted mt-0.5">Influence: {arch.score}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="mt-8 text-center">
             <button
               onClick={() => {
