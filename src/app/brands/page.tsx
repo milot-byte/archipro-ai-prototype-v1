@@ -346,6 +346,48 @@ export default function InboxPage() {
                       </Link>
                     </div>
                   </div>
+
+                  {/* Quote tracking */}
+                  {selected.status !== "new" && (
+                    <div className="rounded-xl border border-border p-3 bg-surface/50">
+                      <p className="text-[10px] font-medium uppercase tracking-wider text-muted mb-2">Quote Tracking</p>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="text-muted">Quote Status</span>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                            selected.status === "resolved" ? "bg-emerald-light text-emerald" :
+                            selected.status === "replied" ? "bg-blue-light text-blue" : "bg-amber-light text-amber"
+                          }`}>{selected.status === "resolved" ? "Confirmed" : selected.status === "replied" ? "Quote Received" : "Pending"}</span>
+                        </div>
+                        {selected.projectName && (
+                          <div className="flex items-center justify-between text-[11px]">
+                            <span className="text-muted">Project</span>
+                            <span className="font-medium">{selected.projectName}</span>
+                          </div>
+                        )}
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="text-muted">Messages</span>
+                          <span className="font-medium">{selected.messages}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="text-muted">Response Time</span>
+                          <span className="font-medium">~4h avg</span>
+                        </div>
+                      </div>
+                      {selected.status === "replied" && (
+                        <div className="mt-2 pt-2 border-t border-border">
+                          <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-[10px] font-medium text-muted border border-border">
+                              <Download size={9} /> Quote_v2.pdf
+                            </div>
+                            <div className="flex items-center gap-1 rounded-lg bg-white px-2 py-1 text-[10px] font-medium text-muted border border-border">
+                              <Download size={9} /> Spec_Sheet.pdf
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Reply compose */}

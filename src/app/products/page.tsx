@@ -273,6 +273,125 @@ export default function ProductsPage() {
             </div>
           </div>
         </div>
+
+        {/* Benchmark comparisons */}
+        <div className="rounded-2xl border border-border bg-white p-6">
+          <h3 className="text-[14px] font-semibold mb-1">Product Benchmarks</h3>
+          <p className="text-[11px] text-muted mb-5">Comparative performance across your saved products</p>
+
+          <div className="grid grid-cols-4 gap-6">
+            {/* Views benchmark */}
+            <div>
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted mb-3">Views (30d)</p>
+              <div className="space-y-2">
+                {productMomentumData.sort((a, b) => b.metrics.views - a.metrics.views).slice(0, 6).map((p) => {
+                  const max = Math.max(...productMomentumData.map(pm => pm.metrics.views));
+                  return (
+                    <div key={p.productId} className="flex items-center gap-2">
+                      <div className="w-12 truncate text-[10px] font-medium">{p.productName.split(" ").slice(-1)[0]}</div>
+                      <div className="flex-1 h-3 rounded-sm bg-surface overflow-hidden">
+                        <div className="h-full bg-foreground/30 rounded-sm" style={{ width: `${(p.metrics.views / max) * 100}%` }} />
+                      </div>
+                      <span className="text-[10px] text-muted w-10 text-right">{(p.metrics.views / 1000).toFixed(1)}k</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Saves benchmark */}
+            <div>
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted mb-3">Saves</p>
+              <div className="space-y-2">
+                {productMomentumData.sort((a, b) => b.metrics.saves - a.metrics.saves).slice(0, 6).map((p) => {
+                  const max = Math.max(...productMomentumData.map(pm => pm.metrics.saves));
+                  return (
+                    <div key={p.productId} className="flex items-center gap-2">
+                      <div className="w-12 truncate text-[10px] font-medium">{p.productName.split(" ").slice(-1)[0]}</div>
+                      <div className="flex-1 h-3 rounded-sm bg-surface overflow-hidden">
+                        <div className="h-full bg-emerald/30 rounded-sm" style={{ width: `${(p.metrics.saves / max) * 100}%` }} />
+                      </div>
+                      <span className="text-[10px] text-muted w-8 text-right">{p.metrics.saves}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Boards benchmark */}
+            <div>
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted mb-3">Board Adds</p>
+              <div className="space-y-2">
+                {productMomentumData.sort((a, b) => b.metrics.boards - a.metrics.boards).slice(0, 6).map((p) => {
+                  const max = Math.max(...productMomentumData.map(pm => pm.metrics.boards));
+                  return (
+                    <div key={p.productId} className="flex items-center gap-2">
+                      <div className="w-12 truncate text-[10px] font-medium">{p.productName.split(" ").slice(-1)[0]}</div>
+                      <div className="flex-1 h-3 rounded-sm bg-surface overflow-hidden">
+                        <div className="h-full bg-blue/30 rounded-sm" style={{ width: `${(p.metrics.boards / max) * 100}%` }} />
+                      </div>
+                      <span className="text-[10px] text-muted w-8 text-right">{p.metrics.boards}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Growth benchmark */}
+            <div>
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted mb-3">Growth %</p>
+              <div className="space-y-2">
+                {productMomentumData.sort((a, b) => b.metrics.viewsGrowth - a.metrics.viewsGrowth).slice(0, 6).map((p) => {
+                  const max = Math.max(...productMomentumData.map(pm => pm.metrics.viewsGrowth));
+                  return (
+                    <div key={p.productId} className="flex items-center gap-2">
+                      <div className="w-12 truncate text-[10px] font-medium">{p.productName.split(" ").slice(-1)[0]}</div>
+                      <div className="flex-1 h-3 rounded-sm bg-surface overflow-hidden">
+                        <div className={`h-full rounded-sm ${p.metrics.viewsGrowth >= 0 ? "bg-emerald/30" : "bg-rose/30"}`} style={{ width: `${Math.abs(p.metrics.viewsGrowth / max) * 100}%` }} />
+                      </div>
+                      <span className={`text-[10px] w-10 text-right font-semibold ${p.metrics.viewsGrowth >= 0 ? "text-emerald" : "text-rose"}`}>{p.metrics.viewsGrowth > 0 ? "+" : ""}{p.metrics.viewsGrowth}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Momentum trend chart */}
+        <div className="rounded-2xl border border-border bg-white p-6">
+          <h3 className="text-[14px] font-semibold mb-1">Weekly Activity Trends</h3>
+          <p className="text-[11px] text-muted mb-4">Views across top products over the past week</p>
+          <div className="flex items-end gap-1 h-[120px]">
+            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day, dayIdx) => {
+              const dayTotal = productMomentumData.slice(0, 4).reduce((s, p) => s + (p.weeklyData[dayIdx]?.views || 0), 0);
+              const maxDay = Math.max(...[0, 1, 2, 3, 4, 5, 6].map(d => productMomentumData.slice(0, 4).reduce((s, p) => s + (p.weeklyData[d]?.views || 0), 0)));
+              return (
+                <div key={day} className="flex-1 flex flex-col items-center gap-1">
+                  <div className="w-full flex flex-col gap-px" style={{ height: `${(dayTotal / maxDay) * 100}px` }}>
+                    {productMomentumData.slice(0, 4).map((p, i) => {
+                      const views = p.weeklyData[dayIdx]?.views || 0;
+                      const colors = ["bg-foreground", "bg-foreground/60", "bg-foreground/30", "bg-foreground/15"];
+                      return <div key={p.productId} className={`w-full rounded-t-sm ${colors[i]}`} style={{ height: `${(views / dayTotal) * 100}%` }} />;
+                    })}
+                  </div>
+                  <span className="text-[9px] text-muted">{day}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-4 mt-3">
+            {productMomentumData.slice(0, 4).map((p, i) => {
+              const colors = ["bg-foreground", "bg-foreground/60", "bg-foreground/30", "bg-foreground/15"];
+              return (
+                <span key={p.productId} className="flex items-center gap-1.5 text-[10px] text-muted">
+                  <span className={`h-2 w-2 rounded-sm ${colors[i]}`} />
+                  {p.productName.split(" — ").pop()?.split(" ").slice(0, 2).join(" ")}
+                </span>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );

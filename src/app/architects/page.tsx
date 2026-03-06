@@ -278,6 +278,155 @@ export default function ArchitectsPage() {
             </div>
           </div>
         </div>
+
+        {/* Architect benchmarks */}
+        <div className="rounded-2xl border border-border bg-white p-6">
+          <h3 className="text-[14px] font-semibold mb-1">Performance Benchmarks</h3>
+          <p className="text-[11px] text-muted mb-5">Comparative metrics across your saved architects</p>
+
+          <div className="grid grid-cols-5 gap-6">
+            {/* Discoveries */}
+            <div>
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted mb-3">Product Discoveries</p>
+              <div className="space-y-2">
+                {architectInfluenceData.sort((a, b) => b.metrics.productDiscoveries - a.metrics.productDiscoveries).map((arch) => {
+                  const max = Math.max(...architectInfluenceData.map(a => a.metrics.productDiscoveries));
+                  return (
+                    <div key={arch.architectId} className="flex items-center gap-2">
+                      <div className="w-14 truncate text-[10px] font-medium">{arch.name.split(" ")[1]}</div>
+                      <div className="flex-1 h-3 rounded-sm bg-surface overflow-hidden">
+                        <div className="h-full bg-foreground/30 rounded-sm" style={{ width: `${(arch.metrics.productDiscoveries / max) * 100}%` }} />
+                      </div>
+                      <span className="text-[10px] text-muted w-10 text-right">{(arch.metrics.productDiscoveries / 1000).toFixed(1)}k</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Saves */}
+            <div>
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted mb-3">Product Saves</p>
+              <div className="space-y-2">
+                {architectInfluenceData.sort((a, b) => b.metrics.productSaves - a.metrics.productSaves).map((arch) => {
+                  const max = Math.max(...architectInfluenceData.map(a => a.metrics.productSaves));
+                  return (
+                    <div key={arch.architectId} className="flex items-center gap-2">
+                      <div className="w-14 truncate text-[10px] font-medium">{arch.name.split(" ")[1]}</div>
+                      <div className="flex-1 h-3 rounded-sm bg-surface overflow-hidden">
+                        <div className="h-full bg-emerald/30 rounded-sm" style={{ width: `${(arch.metrics.productSaves / max) * 100}%` }} />
+                      </div>
+                      <span className="text-[10px] text-muted w-8 text-right">{arch.metrics.productSaves}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Spec Downloads */}
+            <div>
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted mb-3">Spec Downloads</p>
+              <div className="space-y-2">
+                {architectInfluenceData.sort((a, b) => b.metrics.specDownloads - a.metrics.specDownloads).map((arch) => {
+                  const max = Math.max(...architectInfluenceData.map(a => a.metrics.specDownloads));
+                  return (
+                    <div key={arch.architectId} className="flex items-center gap-2">
+                      <div className="w-14 truncate text-[10px] font-medium">{arch.name.split(" ")[1]}</div>
+                      <div className="flex-1 h-3 rounded-sm bg-surface overflow-hidden">
+                        <div className="h-full bg-blue/30 rounded-sm" style={{ width: `${(arch.metrics.specDownloads / max) * 100}%` }} />
+                      </div>
+                      <span className="text-[10px] text-muted w-8 text-right">{arch.metrics.specDownloads}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Enquiries */}
+            <div>
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted mb-3">Enquiries</p>
+              <div className="space-y-2">
+                {architectInfluenceData.sort((a, b) => b.metrics.enquiriesGenerated - a.metrics.enquiriesGenerated).map((arch) => {
+                  const max = Math.max(...architectInfluenceData.map(a => a.metrics.enquiriesGenerated));
+                  return (
+                    <div key={arch.architectId} className="flex items-center gap-2">
+                      <div className="w-14 truncate text-[10px] font-medium">{arch.name.split(" ")[1]}</div>
+                      <div className="flex-1 h-3 rounded-sm bg-surface overflow-hidden">
+                        <div className="h-full bg-amber/30 rounded-sm" style={{ width: `${(arch.metrics.enquiriesGenerated / max) * 100}%` }} />
+                      </div>
+                      <span className="text-[10px] text-muted w-8 text-right">{arch.metrics.enquiriesGenerated}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Boards */}
+            <div>
+              <p className="text-[10px] font-medium uppercase tracking-wider text-muted mb-3">Boards Created</p>
+              <div className="space-y-2">
+                {architectInfluenceData.sort((a, b) => b.metrics.boardsCreated - a.metrics.boardsCreated).map((arch) => {
+                  const max = Math.max(...architectInfluenceData.map(a => a.metrics.boardsCreated));
+                  return (
+                    <div key={arch.architectId} className="flex items-center gap-2">
+                      <div className="w-14 truncate text-[10px] font-medium">{arch.name.split(" ")[1]}</div>
+                      <div className="flex-1 h-3 rounded-sm bg-surface overflow-hidden">
+                        <div className="h-full bg-foreground/20 rounded-sm" style={{ width: `${(arch.metrics.boardsCreated / max) * 100}%` }} />
+                      </div>
+                      <span className="text-[10px] text-muted w-8 text-right">{arch.metrics.boardsCreated}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Influence trend chart */}
+        <div className="rounded-2xl border border-border bg-white p-6">
+          <h3 className="text-[14px] font-semibold mb-1">Influence Trends</h3>
+          <p className="text-[11px] text-muted mb-4">6-month influence score trajectory</p>
+          <div className="relative h-[140px]">
+            {/* Y axis labels */}
+            <div className="absolute left-0 top-0 bottom-5 w-8 flex flex-col justify-between text-[9px] text-muted">
+              <span>100</span>
+              <span>75</span>
+              <span>50</span>
+              <span>25</span>
+            </div>
+            {/* Chart area */}
+            <div className="ml-10 h-full flex items-end gap-2">
+              {[0, 1, 2, 3, 4, 5].map((monthIdx) => {
+                return (
+                  <div key={monthIdx} className="flex-1 flex items-end gap-px" style={{ height: "100%" }}>
+                    {architectInfluenceData.slice(0, 4).map((arch, i) => {
+                      const score = arch.monthlyTrend[monthIdx]?.score || 0;
+                      const colors = ["bg-foreground", "bg-foreground/60", "bg-foreground/30", "bg-foreground/15"];
+                      return <div key={arch.architectId} className={`flex-1 rounded-t-sm ${colors[i]}`} style={{ height: `${score}%` }} />;
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+            {/* X axis labels */}
+            <div className="ml-10 flex mt-1">
+              {["Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].map((m) => (
+                <div key={m} className="flex-1 text-center text-[9px] text-muted">{m}</div>
+              ))}
+            </div>
+          </div>
+          <div className="flex items-center gap-4 mt-3">
+            {architectInfluenceData.slice(0, 4).map((arch, i) => {
+              const colors = ["bg-foreground", "bg-foreground/60", "bg-foreground/30", "bg-foreground/15"];
+              return (
+                <span key={arch.architectId} className="flex items-center gap-1.5 text-[10px] text-muted">
+                  <span className={`h-2 w-2 rounded-sm ${colors[i]}`} />
+                  {arch.name.split(" ")[1]}
+                </span>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );
