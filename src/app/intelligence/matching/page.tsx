@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import Link from "next/link";
 import { architects, brands, products, projects, type Product } from "@/lib/mock-data";
 import {
@@ -22,11 +22,13 @@ import {
   Plus,
   Download,
   ChevronRight,
+  ChevronDown,
   Check,
   Star,
   TrendingUp,
   BarChart3,
   ArrowUpRight,
+  ArrowUpDown,
   CircleDot,
   Sparkles,
   Shield,
@@ -34,6 +36,10 @@ import {
   Home,
   Grid3x3,
   Eye,
+  Repeat2,
+  Crown,
+  Wallet,
+  FileText,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -58,6 +64,16 @@ interface BriefProductMatch {
   styleFit: boolean;
   momentumTrend: string;
   momentumScore: number;
+  // ─── Granular score breakdown ───
+  styleScore: number;       // 0-100 style compatibility
+  materialScore: number;    // 0-100 material compatibility
+  roomScore: number;        // 0-100 room relevance
+  categoryScore: number;    // 0-100 category fit
+  trendScore: number;       // 0-100 trend alignment
+  precedentScore: number;   // 0-100 architect precedent
+  weeklySparkline: number[];
+  substituteIds: string[];  // product ids that could substitute
+  tier: "premium" | "practical";
 }
 
 interface BriefArchitectMatch {
@@ -144,7 +160,8 @@ const mockBriefs: Brief[] = [
 // ─── Computation Functions ────────────────────────────────────────────────────
 
 function computeBriefProductMatches(brief: Brief): BriefProductMatch[] {
-  const styleKeywords = [brief.style.toLowerCase(), ...brief.features.map((f) => f.toLowerCase()), ...brief.materials.map((m) => m.toLowerCase())];
+  const styleKeywords = [brief.style.toLowerCase(), ...brief.features.map((f) => f.toLowerCase())];
+  const materialKeywords = brief.materials.map((m) => m.toLowerCase());
   const roomCategories: Record<string, string[]> = {
     Kitchen: ["Hardware", "Kitchen", "Surfaces", "Lighting"],
     "Living Room": ["Lighting", "Furniture", "Surfaces"],
@@ -164,52 +181,102 @@ function computeBriefProductMatches(brief: Brief): BriefProductMatch[] {
     (roomCategories[r] || []).forEach((c) => neededCategories.add(c));
   });
 
+  // Seeded pseudo-random for deterministic synthetic scores
+  const seed = (s: string) => {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    return Math.abs(h);
+  };
+
   return products.map((product) => {
-    let score = 0;
     const reasons: string[] = [];
-
-    if (neededCategories.has(product.category)) {
-      score += 30;
-      reasons.push(`Matches ${product.category} category need`);
-    }
-
-    const momentum = productMomentumData.find((m) => m.productId === product.id);
-    if (momentum && momentum.trend === "surging") {
-      score += 15;
-      reasons.push("Currently surging in momentum");
-    } else if (momentum && momentum.trend === "rising") {
-      score += 10;
-      reasons.push("Rising momentum trend");
-    }
-
     const productNameLower = product.name.toLowerCase();
     const brandNameLower = product.brand.toLowerCase();
-    brief.materials.forEach((mat) => {
-      if (productNameLower.includes(mat.toLowerCase()) || brandNameLower.includes(mat.toLowerCase())) {
-        score += 20;
-        reasons.push(`Material match: ${mat}`);
-      }
-    });
+    const momentum = productMomentumData.find((m) => m.productId === product.id);
 
+    // ── Style score ──
+    const styleHits = styleKeywords.filter((k) => productNameLower.includes(k) || brandNameLower.includes(k));
+    const styleFit = styleHits.length > 0;
+    // Deterministic synthetic: base from data, with hash jitter
+    const styleBase = styleFit ? 70 : 20;
+    const styleJitter = (seed(product.id + brief.style) % 30);
+    const styleScore = clamp(styleBase + styleJitter, 0, 100);
+    if (styleFit) reasons.push(`Style alignment: ${brief.style}`);
+
+    // ── Material score ──
+    const matHits = materialKeywords.filter((m) => productNameLower.includes(m) || brandNameLower.includes(m));
+    const materialBase = matHits.length > 0 ? 65 + matHits.length * 15 : 15;
+    const materialJitter = (seed(product.id + "mat") % 25);
+    const materialScore = clamp(materialBase + materialJitter, 0, 100);
+    if (matHits.length > 0) reasons.push(`Material match: ${matHits.join(", ")}`);
+
+    // ── Room relevance ──
+    const roomRelevant = neededCategories.has(product.category);
+    const roomRoomCount = brief.rooms.filter((r) => (roomCategories[r] || []).includes(product.category)).length;
+    const roomScore = clamp(roomRelevant ? 40 + roomRoomCount * 15 + (seed(product.id + "room") % 20) : 10 + (seed(product.id + "room") % 15), 0, 100);
+    if (roomRelevant) reasons.push(`Relevant to ${roomRoomCount} room${roomRoomCount > 1 ? "s" : ""}`);
+
+    // ── Category fit ──
+    const categoryFit = neededCategories.has(product.category);
+    const categoryScore = categoryFit ? clamp(70 + (seed(product.id + "cat") % 30), 0, 100) : clamp(5 + (seed(product.id + "cat") % 20), 0, 100);
+    if (categoryFit) reasons.push(`Matches ${product.category} category need`);
+
+    // ── Trend alignment ──
+    const trendMap: Record<string, number> = { surging: 90, rising: 70, steady: 40, cooling: 20 };
+    const trendBase = trendMap[momentum?.trend || "steady"] || 40;
+    const trendScore = clamp(trendBase + (seed(product.id + "trend") % 15), 0, 100);
+    if (momentum?.trend === "surging") reasons.push("Currently surging in momentum");
+    else if (momentum?.trend === "rising") reasons.push("Rising momentum trend");
+
+    // ── Architect precedent ──
     const usedInProjects = projects.filter((p) => p.products.includes(product.id));
-    if (usedInProjects.length > 0) {
-      score += Math.min(usedInProjects.length * 8, 20);
-      reasons.push(`Used in ${usedInProjects.length} project${usedInProjects.length > 1 ? "s" : ""}`);
-    }
+    const usedByMultiple = new Set(usedInProjects.map((p) => p.architectId)).size;
+    const precedentScore = clamp(usedByMultiple * 25 + usedInProjects.length * 10 + (seed(product.id + "prec") % 15), 0, 100);
+    if (usedInProjects.length > 0) reasons.push(`Used in ${usedInProjects.length} project${usedInProjects.length > 1 ? "s" : ""} by ${usedByMultiple} architect${usedByMultiple > 1 ? "s" : ""}`);
 
-    if (product.specSheet) {
-      score += 5;
-      reasons.push("Spec sheet available");
-    }
+    if (product.specSheet) reasons.push("Spec sheet available");
+
+    // ── Composite score (weighted) ──
+    const score = clamp(Math.round(
+      styleScore * 0.18 +
+      materialScore * 0.17 +
+      roomScore * 0.15 +
+      categoryScore * 0.20 +
+      trendScore * 0.15 +
+      precedentScore * 0.15
+    ), 0, 100);
+
+    // ── Weekly sparkline ──
+    const weeklySparkline = momentum
+      ? momentum.weeklyData.map((d) => d.views)
+      : Array.from({ length: 7 }, (_, i) => 100 + (seed(product.id + `w${i}`) % 400));
+
+    // ── Substitutes: same category, different brand ──
+    const substituteIds = products
+      .filter((p) => p.category === product.category && p.id !== product.id && p.brandId !== product.brandId)
+      .slice(0, 3)
+      .map((p) => p.id);
+
+    // ── Tier ──
+    const tier: "premium" | "practical" = parsePrice(product.price) > 400 ? "premium" : "practical";
 
     return {
       product,
-      score: clamp(score, 0, 100),
+      score,
       reasons,
-      categoryFit: neededCategories.has(product.category),
-      styleFit: styleKeywords.some((k) => productNameLower.includes(k) || brandNameLower.includes(k)),
+      categoryFit,
+      styleFit,
       momentumTrend: momentum?.trend || "steady",
       momentumScore: momentum?.momentumScore || 0,
+      styleScore,
+      materialScore,
+      roomScore,
+      categoryScore,
+      trendScore,
+      precedentScore,
+      weeklySparkline,
+      substituteIds,
+      tier,
     };
   }).sort((a, b) => b.score - a.score);
 }
@@ -504,7 +571,92 @@ function MatchingHero({ topMatchScore, avgMatchScore, highMatches, categoriesCov
   );
 }
 
+// ─── Mini Sparkline SVG ───────────────────────────────────────────────────────
+
+function Sparkline({ data, width = 64, height = 20, color = "#0a0a0a" }: { data: number[]; width?: number; height?: number; color?: string }) {
+  if (data.length < 2) return null;
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const points = data.map((v, i) => `${(i / (data.length - 1)) * width},${height - ((v - min) / range) * (height - 2) - 1}`).join(" ");
+  return (
+    <svg width={width} height={height} className="shrink-0">
+      <polyline points={points} fill="none" stroke={color} strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+      <circle cx={(data.length - 1) / (data.length - 1) * width} cy={height - ((data[data.length - 1] - min) / range) * (height - 2) - 1} r={2} fill={color} />
+    </svg>
+  );
+}
+
+// ─── Radar Chart SVG ──────────────────────────────────────────────────────────
+
+function RadarChart({ scores, size = 120 }: { scores: { label: string; value: number }[]; size?: number }) {
+  const cx = size / 2;
+  const cy = size / 2;
+  const r = size / 2 - 20;
+  const n = scores.length;
+  const angleStep = (2 * Math.PI) / n;
+
+  const pointAt = (i: number, radius: number) => ({
+    x: cx + radius * Math.cos(angleStep * i - Math.PI / 2),
+    y: cy + radius * Math.sin(angleStep * i - Math.PI / 2),
+  });
+
+  const gridLevels = [0.25, 0.5, 0.75, 1.0];
+  const dataPoints = scores.map((s, i) => pointAt(i, (s.value / 100) * r));
+  const dataPath = dataPoints.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ") + " Z";
+
+  return (
+    <svg width={size} height={size} className="shrink-0">
+      {/* Grid rings */}
+      {gridLevels.map((level) => {
+        const pts = scores.map((_, i) => pointAt(i, level * r));
+        const path = pts.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ") + " Z";
+        return <path key={level} d={path} fill="none" stroke="#e5e5e5" strokeWidth={0.5} />;
+      })}
+      {/* Axis lines */}
+      {scores.map((_, i) => {
+        const p = pointAt(i, r);
+        return <line key={i} x1={cx} y1={cy} x2={p.x} y2={p.y} stroke="#e5e5e5" strokeWidth={0.5} />;
+      })}
+      {/* Data polygon */}
+      <path d={dataPath} fill="rgba(10,10,10,0.08)" stroke="#0a0a0a" strokeWidth={1.5} />
+      {/* Data points */}
+      {dataPoints.map((p, i) => (
+        <circle key={i} cx={p.x} cy={p.y} r={2.5} fill="#0a0a0a" />
+      ))}
+      {/* Labels */}
+      {scores.map((s, i) => {
+        const labelR = r + 14;
+        const lp = pointAt(i, labelR);
+        const anchor = lp.x < cx - 5 ? "end" : lp.x > cx + 5 ? "start" : "middle";
+        return (
+          <text key={i} x={lp.x} y={lp.y + 3} textAnchor={anchor} className="text-[7px] font-medium" fill="#737373">
+            {s.label}
+          </text>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ─── Score Dimension Bar (compact inline) ─────────────────────────────────────
+
+function DimensionBar({ label, score }: { label: string; score: number }) {
+  const color = score >= 75 ? "#059669" : score >= 50 ? "#0a0a0a" : score >= 30 ? "#d97706" : "#e11d48";
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="w-[52px] text-[8px] font-medium text-muted text-right truncate">{label}</span>
+      <div className="w-16 h-[5px] bg-surface rounded-full overflow-hidden">
+        <div className="h-full rounded-full" style={{ width: `${score}%`, backgroundColor: color }} />
+      </div>
+      <span className="text-[8px] font-bold w-5" style={{ color }}>{score}</span>
+    </div>
+  );
+}
+
 // ─── Section 1: Brief → Product ───────────────────────────────────────────────
+
+type SortKey = "score" | "styleScore" | "materialScore" | "roomScore" | "categoryScore" | "trendScore" | "precedentScore" | "price";
 
 function BriefToProductSection({ brief, selectedBrief, setSelectedBrief, matches, savedProducts, toggleSaveProduct }: {
   brief: Brief;
@@ -514,6 +666,52 @@ function BriefToProductSection({ brief, selectedBrief, setSelectedBrief, matches
   savedProducts: Set<string>;
   toggleSaveProduct: (id: string) => void;
 }) {
+  const [sortKey, setSortKey] = useState<SortKey>("score");
+  const [sortAsc, setSortAsc] = useState(false);
+  const [tierFilter, setTierFilter] = useState<"all" | "premium" | "practical">("all");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [addedToBoard, setAddedToBoard] = useState<Set<string>>(new Set());
+  const [addedToSpec, setAddedToSpec] = useState<Set<string>>(new Set());
+
+  const handleSort = (key: SortKey) => {
+    if (sortKey === key) setSortAsc(!sortAsc);
+    else { setSortKey(key); setSortAsc(false); }
+  };
+
+  const sorted = useMemo(() => {
+    let filtered = tierFilter === "all" ? matches : matches.filter((m) => m.tier === tierFilter);
+    return [...filtered].sort((a, b) => {
+      let av: number, bv: number;
+      if (sortKey === "price") {
+        av = parsePrice(a.product.price);
+        bv = parsePrice(b.product.price);
+      } else {
+        av = a[sortKey];
+        bv = b[sortKey];
+      }
+      return sortAsc ? av - bv : bv - av;
+    });
+  }, [matches, sortKey, sortAsc, tierFilter]);
+
+  const toggleBoard = (id: string) => {
+    const next = new Set(addedToBoard);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setAddedToBoard(next);
+  };
+
+  const toggleSpec = (id: string) => {
+    const next = new Set(addedToSpec);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setAddedToSpec(next);
+  };
+
+  const SortHeader = ({ label, field, className = "" }: { label: string; field: SortKey; className?: string }) => (
+    <button onClick={() => handleSort(field)} className={`flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-[0.06em] text-muted hover:text-foreground transition-colors ${className}`}>
+      {label}
+      <ArrowUpDown size={8} className={sortKey === field ? "text-foreground" : "text-muted/40"} />
+    </button>
+  );
+
   return (
     <div className="space-y-6">
       {/* Brief selector */}
@@ -565,51 +763,260 @@ function BriefToProductSection({ brief, selectedBrief, setSelectedBrief, matches
         </div>
       </div>
 
-      {/* Product matches */}
-      <div className="rounded-2xl border border-border bg-white overflow-hidden">
-        <div className="p-5 border-b border-border">
-          <h2 className="text-[14px] font-semibold">Product Matches</h2>
-          <p className="text-[11px] text-muted mt-0.5">Ranked by multi-factor match score</p>
-        </div>
-        <div className="divide-y divide-border">
-          {matches.map((match, i) => (
-            <div key={match.product.id} className={`flex items-center gap-4 px-5 py-4 transition-colors ${i < 3 ? "bg-emerald-light/30" : ""}`}>
-              <span className="w-6 text-[11px] font-bold text-muted text-center">{i + 1}</span>
-              <ScoreRing score={match.score} size={42} strokeWidth={3} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <p className="text-[13px] font-semibold truncate">{match.product.name}</p>
-                  <TrendBadge trend={match.momentumTrend} />
-                </div>
-                <p className="text-[11px] text-muted">{match.product.brand} · {match.product.category}</p>
-                <div className="mt-1.5 flex flex-wrap gap-1.5">
-                  <FitBadge label="Category" active={match.categoryFit} />
-                  <FitBadge label="Style" active={match.styleFit} />
-                  <FitBadge label="Spec Sheet" active={match.product.specSheet} />
-                </div>
-              </div>
-              <div className="text-right shrink-0">
-                <p className="text-[14px] font-semibold">{match.product.price}</p>
-                <div className="mt-1 space-y-0.5">
-                  {match.reasons.slice(0, 2).map((r, j) => (
-                    <p key={j} className="text-[9px] text-muted">{r}</p>
-                  ))}
-                </div>
-              </div>
-              <div className="flex gap-1.5 shrink-0">
-                <button
-                  onClick={() => toggleSaveProduct(match.product.id)}
-                  className={`rounded-lg p-2 transition-colors ${savedProducts.has(match.product.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}
-                >
-                  <Bookmark size={13} />
-                </button>
-                <button className="rounded-lg bg-surface p-2 text-muted hover:bg-foreground hover:text-white transition-colors">
-                  <Plus size={13} />
-                </button>
-              </div>
-            </div>
+      {/* Controls: tier toggle + sort indicator */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1 rounded-xl border border-border bg-white p-1">
+          {([["all", "All Products", null], ["premium", "Premium", Crown], ["practical", "Practical", Wallet]] as const).map(([key, label, Icon]) => (
+            <button
+              key={key}
+              onClick={() => setTierFilter(key)}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors ${tierFilter === key ? "bg-foreground text-white" : "text-muted hover:bg-surface"}`}
+            >
+              {Icon && <Icon size={12} />}
+              {label}
+            </button>
           ))}
         </div>
+        <div className="flex items-center gap-3 text-[10px] text-muted">
+          <span>{sorted.length} of {matches.length} products</span>
+          <span>·</span>
+          <span>Sorted by <strong className="text-foreground">{sortKey === "score" ? "Overall" : sortKey.replace("Score", "")}</strong> {sortAsc ? "↑" : "↓"}</span>
+        </div>
+      </div>
+
+      {/* Sortable recommendation table */}
+      <div className="rounded-2xl border border-border bg-white overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-border bg-surface/30">
+                <th className="p-3 text-left"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">#</span></th>
+                <th className="p-3 text-left"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Product</span></th>
+                <th className="p-3"><SortHeader label="Match" field="score" /></th>
+                <th className="p-3"><SortHeader label="Style" field="styleScore" /></th>
+                <th className="p-3"><SortHeader label="Material" field="materialScore" /></th>
+                <th className="p-3"><SortHeader label="Room" field="roomScore" /></th>
+                <th className="p-3"><SortHeader label="Category" field="categoryScore" /></th>
+                <th className="p-3"><SortHeader label="Trend" field="trendScore" /></th>
+                <th className="p-3"><SortHeader label="Precedent" field="precedentScore" /></th>
+                <th className="p-3 text-center"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Activity</span></th>
+                <th className="p-3"><SortHeader label="Price" field="price" className="justify-end" /></th>
+                <th className="p-3 text-center"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((match, i) => {
+                const isExpanded = expandedId === match.product.id;
+                const subProducts = match.substituteIds.map((sid) => products.find((p) => p.id === sid)).filter(Boolean) as Product[];
+                const subMatches = match.substituteIds.map((sid) => matches.find((m) => m.product.id === sid)).filter(Boolean) as BriefProductMatch[];
+
+                return (
+                  <React.Fragment key={match.product.id}>
+                    <tr
+                      className={`border-b border-border transition-colors cursor-pointer ${i < 3 ? "bg-emerald-light/20" : "hover:bg-surface/30"} ${isExpanded ? "bg-surface/40" : ""}`}
+                      onClick={() => setExpandedId(isExpanded ? null : match.product.id)}
+                    >
+                      <td className="p-3">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] font-bold text-muted w-4 text-center">{i + 1}</span>
+                          {match.tier === "premium" && <Crown size={10} className="text-amber" />}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-2.5 min-w-[180px]">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-[12px] font-semibold truncate">{match.product.name}</p>
+                              <TrendBadge trend={match.momentumTrend} />
+                            </div>
+                            <p className="text-[10px] text-muted">{match.product.brand} · {match.product.category}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="p-3 text-center">
+                        <ScoreRing score={match.score} size={36} strokeWidth={3} />
+                      </td>
+                      <td className="p-3 text-center">
+                        <DimCell score={match.styleScore} />
+                      </td>
+                      <td className="p-3 text-center">
+                        <DimCell score={match.materialScore} />
+                      </td>
+                      <td className="p-3 text-center">
+                        <DimCell score={match.roomScore} />
+                      </td>
+                      <td className="p-3 text-center">
+                        <DimCell score={match.categoryScore} />
+                      </td>
+                      <td className="p-3 text-center">
+                        <DimCell score={match.trendScore} />
+                      </td>
+                      <td className="p-3 text-center">
+                        <DimCell score={match.precedentScore} />
+                      </td>
+                      <td className="p-3 text-center">
+                        <Sparkline data={match.weeklySparkline} width={56} height={18} color={match.momentumTrend === "surging" ? "#059669" : match.momentumTrend === "cooling" ? "#d97706" : "#0a0a0a"} />
+                      </td>
+                      <td className="p-3 text-right">
+                        <span className="text-[12px] font-semibold whitespace-nowrap">{match.product.price}</span>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-1 justify-center" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={() => toggleSaveProduct(match.product.id)}
+                            title="Save"
+                            className={`rounded-md p-1.5 transition-colors ${savedProducts.has(match.product.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}
+                          >
+                            <Bookmark size={11} />
+                          </button>
+                          <button
+                            onClick={() => toggleBoard(match.product.id)}
+                            title="Add to Board"
+                            className={`rounded-md p-1.5 transition-colors ${addedToBoard.has(match.product.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}
+                          >
+                            <Plus size={11} />
+                          </button>
+                          <button
+                            onClick={() => toggleSpec(match.product.id)}
+                            title="Add to Specification"
+                            className={`rounded-md p-1.5 transition-colors ${addedToSpec.has(match.product.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}
+                          >
+                            <FileText size={11} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+
+                    {/* Expanded row: radar chart + score breakdown + substitutes */}
+                    {isExpanded && (
+                      <tr className="border-b border-border bg-surface/20">
+                        <td colSpan={12} className="p-0">
+                          <div className="px-5 py-5">
+                            <div className="grid grid-cols-12 gap-6">
+
+                              {/* Radar chart */}
+                              <div className="col-span-3 flex flex-col items-center">
+                                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-3">Compatibility Radar</p>
+                                <RadarChart scores={[
+                                  { label: "Style", value: match.styleScore },
+                                  { label: "Material", value: match.materialScore },
+                                  { label: "Room", value: match.roomScore },
+                                  { label: "Category", value: match.categoryScore },
+                                  { label: "Trend", value: match.trendScore },
+                                  { label: "Precedent", value: match.precedentScore },
+                                ]} size={140} />
+                              </div>
+
+                              {/* Score breakdown */}
+                              <div className="col-span-4">
+                                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-3">Score Breakdown</p>
+                                <div className="space-y-2.5">
+                                  <DimensionBar label="Style" score={match.styleScore} />
+                                  <DimensionBar label="Material" score={match.materialScore} />
+                                  <DimensionBar label="Room" score={match.roomScore} />
+                                  <DimensionBar label="Category" score={match.categoryScore} />
+                                  <DimensionBar label="Trend" score={match.trendScore} />
+                                  <DimensionBar label="Precedent" score={match.precedentScore} />
+                                </div>
+                                <div className="mt-4 pt-3 border-t border-border">
+                                  <p className="text-[10px] font-semibold text-muted mb-1.5">Match Reasons</p>
+                                  <div className="space-y-1">
+                                    {match.reasons.map((r, j) => (
+                                      <div key={j} className="flex items-center gap-1.5 text-[10px]">
+                                        <ChevronRight size={9} className="text-muted shrink-0" />
+                                        <span className="text-muted">{r}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Substitute comparison */}
+                              <div className="col-span-5">
+                                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-3">
+                                  <Repeat2 size={10} className="inline mr-1" />
+                                  Substitute Products
+                                </p>
+                                {subProducts.length === 0 ? (
+                                  <p className="text-[10px] text-muted italic">No substitutes in this category</p>
+                                ) : (
+                                  <div className="rounded-xl border border-border overflow-hidden">
+                                    <table className="w-full">
+                                      <thead>
+                                        <tr className="bg-surface/50">
+                                          <th className="px-3 py-2 text-[8px] font-semibold uppercase tracking-wider text-muted text-left">Product</th>
+                                          <th className="px-3 py-2 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Match</th>
+                                          <th className="px-3 py-2 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Style</th>
+                                          <th className="px-3 py-2 text-[8px] font-semibold uppercase tracking-wider text-muted text-right">Price</th>
+                                          <th className="px-3 py-2 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Tier</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {/* Current product row */}
+                                        <tr className="border-t border-border bg-foreground/[0.03]">
+                                          <td className="px-3 py-2">
+                                            <p className="text-[10px] font-semibold">{match.product.name}</p>
+                                            <p className="text-[8px] text-muted">{match.product.brand} (current)</p>
+                                          </td>
+                                          <td className="px-3 py-2 text-center"><span className="text-[10px] font-bold">{match.score}%</span></td>
+                                          <td className="px-3 py-2 text-center"><DimCell score={match.styleScore} /></td>
+                                          <td className="px-3 py-2 text-right"><span className="text-[10px] font-semibold">{match.product.price}</span></td>
+                                          <td className="px-3 py-2 text-center">
+                                            <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-semibold ${match.tier === "premium" ? "bg-amber-light text-amber" : "bg-emerald-light text-emerald"}`}>
+                                              {match.tier === "premium" ? "Premium" : "Practical"}
+                                            </span>
+                                          </td>
+                                        </tr>
+                                        {/* Substitute rows */}
+                                        {subProducts.map((sp, si) => {
+                                          const sm = subMatches[si];
+                                          return (
+                                            <tr key={sp.id} className="border-t border-border hover:bg-surface/30">
+                                              <td className="px-3 py-2">
+                                                <p className="text-[10px] font-medium">{sp.name}</p>
+                                                <p className="text-[8px] text-muted">{sp.brand}</p>
+                                              </td>
+                                              <td className="px-3 py-2 text-center"><span className="text-[10px] font-bold">{sm?.score ?? "—"}%</span></td>
+                                              <td className="px-3 py-2 text-center"><DimCell score={sm?.styleScore ?? 0} /></td>
+                                              <td className="px-3 py-2 text-right"><span className="text-[10px] font-medium">{sp.price}</span></td>
+                                              <td className="px-3 py-2 text-center">
+                                                <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-semibold ${(sm?.tier ?? "practical") === "premium" ? "bg-amber-light text-amber" : "bg-emerald-light text-emerald"}`}>
+                                                  {(sm?.tier ?? "practical") === "premium" ? "Premium" : "Practical"}
+                                                </span>
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Dimension Cell (compact score with color) ────────────────────────────────
+
+function DimCell({ score }: { score: number }) {
+  const color = score >= 75 ? "#059669" : score >= 50 ? "#0a0a0a" : score >= 30 ? "#d97706" : "#e11d48";
+  return (
+    <div className="flex flex-col items-center gap-0.5">
+      <span className="text-[10px] font-bold" style={{ color }}>{score}</span>
+      <div className="w-8 h-[3px] bg-surface rounded-full overflow-hidden">
+        <div className="h-full rounded-full" style={{ width: `${score}%`, backgroundColor: color }} />
       </div>
     </div>
   );
