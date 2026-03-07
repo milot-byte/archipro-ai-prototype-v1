@@ -348,6 +348,244 @@ function computeProjectWorkflow(projectId: string): ProjectWorkflowData | null {
   };
 }
 
+// ─── Spec Detail Workflow Data ───────────────────────────────────────────────
+
+interface SpecWorkflowData {
+  missingItems: {
+    room: string;
+    category: string;
+    reason: string;
+    suggestion: { id: string; name: string; brand: string; price: string; momentum: number } | null;
+  }[];
+  substitutes: {
+    currentProduct: string;
+    currentBrand: string;
+    room: string;
+    alternative: { id: string; name: string; brand: string; price: string; momentum: number; reason: string };
+  }[];
+  leadTimeWarnings: {
+    productName: string;
+    brand: string;
+    room: string;
+    status: string;
+    estimatedWeeks: number;
+    severity: "high" | "medium" | "low";
+    warning: string;
+  }[];
+  budgetImpact: {
+    totalEstimate: number;
+    byRoom: { room: string; amount: number; items: number; pct: number }[];
+    byStatus: { status: string; amount: number; pct: number }[];
+    potentialSavings: number;
+  };
+  approvalReadiness: {
+    score: number;
+    factors: { name: string; score: number; maxScore: number; status: "pass" | "warn" | "fail"; detail: string }[];
+    blockers: string[];
+    specStatus: string;
+  };
+}
+
+function computeSpecWorkflow(specId: string): SpecWorkflowData | null {
+  const spec = specifications.find(s => s.id === specId);
+  if (!spec) return null;
+
+  const allItems = spec.rooms.flatMap(r => r.items.map(i => ({ ...i, roomName: r.name })));
+
+  // ── Missing Items Detection ──
+  // Check what common categories are missing per room
+  const commonRoomCategories: Record<string, string[]> = {
+    "Kitchen": ["Hardware", "Kitchen", "Surfaces", "Lighting"],
+    "Living Room": ["Lighting", "Furniture", "Surfaces"],
+    "Great Room": ["Lighting", "Furniture", "Surfaces", "Hardware"],
+    "Outdoor Deck": ["Decking", "Outdoor"],
+    "Studio": ["Lighting", "Furniture", "Surfaces"],
+    "Kitchen Nook": ["Kitchen", "Hardware"],
+    "Garden & Pergola": ["Outdoor", "Decking"],
+    "Roof & Exterior": ["Roofing"],
+    "Bathroom": ["Hardware", "Surfaces", "Lighting"],
+    "Master Bedroom": ["Lighting", "Furniture"],
+    "Hallway": ["Lighting", "Surfaces"],
+  };
+
+  const missingItems: SpecWorkflowData["missingItems"] = [];
+  spec.rooms.forEach(room => {
+    const expected = commonRoomCategories[room.name] || [];
+    const present = [...new Set(room.items.map(i => i.category))];
+    const missing = expected.filter(c => !present.includes(c));
+    missing.forEach(category => {
+      const candidates = products.filter(p => p.category === category);
+      const withMomentum = candidates.map(p => {
+        const m = productMomentumData.find(pm => pm.productId === p.id);
+        return { id: p.id, name: p.name, brand: p.brand, price: p.price, momentum: m?.momentumScore || 0 };
+      }).sort((a, b) => b.momentum - a.momentum);
+      missingItems.push({
+        room: room.name,
+        category,
+        reason: `${room.name} typically includes ${category.toLowerCase()} products`,
+        suggestion: withMomentum[0] || null,
+      });
+    });
+  });
+
+  // ── Substitute Products ──
+  const substitutes: SpecWorkflowData["substitutes"] = [];
+  allItems.forEach(item => {
+    const currentMomentum = productMomentumData.find(m => m.productId === item.productId);
+    if (currentMomentum && (currentMomentum.trend === "cooling" || currentMomentum.momentumScore < 55)) {
+      // Find better alternatives in the same category
+      const alternatives = products
+        .filter(p => p.category === item.category && p.id !== item.productId)
+        .map(p => {
+          const m = productMomentumData.find(pm => pm.productId === p.id);
+          return { id: p.id, name: p.name, brand: p.brand, price: p.price, momentum: m?.momentumScore || 0 };
+        })
+        .filter(p => p.momentum > (currentMomentum.momentumScore + 10))
+        .sort((a, b) => b.momentum - a.momentum);
+
+      if (alternatives.length > 0) {
+        const alt = alternatives[0];
+        substitutes.push({
+          currentProduct: item.productName,
+          currentBrand: item.brand,
+          room: item.roomName,
+          alternative: {
+            ...alt,
+            reason: `+${alt.momentum - currentMomentum.momentumScore} momentum, ${alt.momentum >= 80 ? "surging" : "rising"} trend`,
+          },
+        });
+      }
+    }
+  });
+
+  // ── Lead Time Warnings ──
+  // Mock lead times based on category and status
+  const categoryLeadTimes: Record<string, number> = {
+    "Kitchen": 8, "Furniture": 6, "Lighting": 3, "Surfaces": 5,
+    "Hardware": 2, "Roofing": 10, "Decking": 4, "Outdoor": 7,
+  };
+  const leadTimeWarnings: SpecWorkflowData["leadTimeWarnings"] = [];
+  allItems.forEach(item => {
+    if (item.status === "specified" || item.status === "ordered") {
+      const weeks = categoryLeadTimes[item.category] || 4;
+      const severity = weeks >= 8 ? "high" as const : weeks >= 5 ? "medium" as const : "low" as const;
+      if (severity !== "low") {
+        leadTimeWarnings.push({
+          productName: item.productName,
+          brand: item.brand,
+          room: item.roomName,
+          status: item.status,
+          estimatedWeeks: weeks,
+          severity,
+          warning: `${item.brand} ${item.category}: ~${weeks} week lead time. ${item.status === "specified" ? "Not yet ordered." : "Order placed, delivery pending."}`,
+        });
+      }
+    }
+  });
+  leadTimeWarnings.sort((a, b) => b.estimatedWeeks - a.estimatedWeeks);
+
+  // ── Budget Impact ──
+  const roomCosts = spec.rooms.map(room => {
+    let amount = 0;
+    room.items.forEach(item => {
+      const product = products.find(p => p.id === item.productId);
+      if (product) amount += parsePrice(product.price) * item.quantity;
+    });
+    return { room: room.name, amount, items: room.items.length, pct: 0 };
+  });
+  const totalEstimate = roomCosts.reduce((s, r) => s + r.amount, 0);
+  roomCosts.forEach(r => { r.pct = totalEstimate > 0 ? Math.round((r.amount / totalEstimate) * 100) : 0; });
+
+  const statusCosts: Record<string, number> = {};
+  allItems.forEach(item => {
+    const product = products.find(p => p.id === item.productId);
+    if (product) {
+      const cost = parsePrice(product.price) * item.quantity;
+      statusCosts[item.status] = (statusCosts[item.status] || 0) + cost;
+    }
+  });
+  const byStatus = Object.entries(statusCosts).map(([status, amount]) => ({
+    status,
+    amount,
+    pct: totalEstimate > 0 ? Math.round((amount / totalEstimate) * 100) : 0,
+  }));
+
+  // Potential savings from substitutes
+  const potentialSavings = substitutes.reduce((s, sub) => {
+    const currentPrice = parsePrice(products.find(p => p.name === sub.currentProduct)?.price || "0");
+    const altPrice = parsePrice(sub.alternative.price);
+    return s + Math.max(0, currentPrice - altPrice);
+  }, 0);
+
+  // ── Approval Readiness ──
+  const factors: SpecWorkflowData["approvalReadiness"]["factors"] = [];
+  const blockers: string[] = [];
+
+  // Factor 1: All rooms have items
+  const roomsWithItems = spec.rooms.filter(r => r.items.length > 0).length;
+  const roomScore = Math.round((roomsWithItems / spec.rooms.length) * 25);
+  factors.push({
+    name: "Room Coverage",
+    score: roomScore,
+    maxScore: 25,
+    status: roomScore >= 20 ? "pass" : roomScore >= 15 ? "warn" : "fail",
+    detail: `${roomsWithItems}/${spec.rooms.length} rooms have items`,
+  });
+
+  // Factor 2: Item status progress
+  const installed = allItems.filter(i => i.status === "installed").length;
+  const ordered = allItems.filter(i => i.status === "ordered" || i.status === "delivered").length;
+  const progressScore = Math.round(((installed + ordered * 0.5) / allItems.length) * 25);
+  factors.push({
+    name: "Order Progress",
+    score: progressScore,
+    maxScore: 25,
+    status: progressScore >= 18 ? "pass" : progressScore >= 10 ? "warn" : "fail",
+    detail: `${installed} installed, ${ordered} ordered/delivered out of ${allItems.length}`,
+  });
+  if (progressScore < 10) blockers.push("Most items still at 'specified' status — need ordering");
+
+  // Factor 3: No missing critical categories
+  const criticalMissing = missingItems.filter(m =>
+    ["Lighting", "Hardware", "Surfaces"].includes(m.category)
+  ).length;
+  const categoryScore = Math.max(0, 25 - criticalMissing * 8);
+  factors.push({
+    name: "Category Completeness",
+    score: categoryScore,
+    maxScore: 25,
+    status: categoryScore >= 20 ? "pass" : categoryScore >= 12 ? "warn" : "fail",
+    detail: criticalMissing === 0 ? "All critical categories covered" : `${criticalMissing} critical categor${criticalMissing > 1 ? "ies" : "y"} missing`,
+  });
+  if (criticalMissing > 0) blockers.push(`${criticalMissing} critical product categories not specified`);
+
+  // Factor 4: Brand diversity / no single-supplier risk
+  const brandCounts = new Map<string, number>();
+  allItems.forEach(i => brandCounts.set(i.brand, (brandCounts.get(i.brand) || 0) + 1));
+  const maxBrandConcentration = Math.max(...Array.from(brandCounts.values())) / allItems.length;
+  const diversityScore = maxBrandConcentration > 0.6 ? 10 : maxBrandConcentration > 0.4 ? 18 : 25;
+  factors.push({
+    name: "Supplier Diversity",
+    score: diversityScore,
+    maxScore: 25,
+    status: diversityScore >= 20 ? "pass" : diversityScore >= 15 ? "warn" : "fail",
+    detail: `${brandCounts.size} brands, ${Math.round(maxBrandConcentration * 100)}% max concentration`,
+  });
+
+  const totalScore = factors.reduce((s, f) => s + f.score, 0);
+
+  // Status-based blockers
+  if (spec.status === "draft") blockers.push("Specification is still in draft — submit for review");
+
+  return {
+    missingItems,
+    substitutes,
+    leadTimeWarnings,
+    budgetImpact: { totalEstimate, byRoom: roomCosts, byStatus, potentialSavings },
+    approvalReadiness: { score: totalScore, factors, blockers, specStatus: spec.status },
+  };
+}
+
 // ─── Insight Generation ─────────────────────────────────────────────────────
 
 function generateInsights(context: PageContext, entityId?: string): Insight[] {
@@ -652,36 +890,91 @@ function generateInsights(context: PageContext, entityId?: string): Insight[] {
       ];
     }
 
-    case "specifications":
     case "spec-detail": {
+      const specWorkflow = entityId ? computeSpecWorkflow(entityId) : null;
       const spec = entityId ? specifications.find(s => s.id === entityId) : null;
-      if (spec) {
-        const totalItems = spec.rooms.reduce((s, r) => s + r.items.length, 0);
-        const installed = spec.rooms.reduce((s, r) => s + r.items.filter(i => i.status === "installed").length, 0);
-        const specified = spec.rooms.reduce((s, r) => s + r.items.filter(i => i.status === "specified").length, 0);
-        return [
-          {
-            id: "sp-1", type: "action", icon: ClipboardList,
-            title: `${specified} items still at "specified" status`,
-            description: `${spec.projectName} has ${totalItems} total items. ${installed} installed, ${specified} awaiting order. Advance the pipeline.`,
-            metric: `${Math.round((installed / totalItems) * 100)}%`, metricLabel: "installed",
-            confidence: 95,
-          },
-          {
-            id: "sp-2", type: "recommendation", icon: Package,
-            title: "Suggested room additions",
-            description: `${spec.rooms.map(r => r.name).join(", ")} are specified. Consider adding ${["Bathroom", "Hallway", "Master Suite"].filter(r => !spec.rooms.find(rm => rm.name === r)).slice(0, 2).join(" and ")} specifications.`,
-            confidence: 72,
-            tags: ["AI Suggestion"],
-          },
-          {
-            id: "sp-3", type: "opportunity", icon: TrendingUp,
-            title: "Product alternatives with higher momentum",
-            description: "Some specified products have surging alternatives. Pendant Light — Arc (score 96) could replace lower-performing lighting selections.",
-            confidence: 78,
-          },
-        ];
+      if (!specWorkflow || !spec) return [];
+
+      const totalItems = spec.rooms.reduce((s, r) => s + r.items.length, 0);
+      const installed = spec.rooms.reduce((s, r) => s + r.items.filter(i => i.status === "installed").length, 0);
+      const specified = spec.rooms.reduce((s, r) => s + r.items.filter(i => i.status === "specified").length, 0);
+      const ins: Insight[] = [];
+
+      // Approval readiness
+      ins.push({
+        id: "sp-ready", type: specWorkflow.approvalReadiness.score >= 75 ? "recommendation" : specWorkflow.approvalReadiness.score >= 50 ? "action" : "warning",
+        icon: specWorkflow.approvalReadiness.score >= 75 ? CheckCircle2 : specWorkflow.approvalReadiness.score >= 50 ? Target : AlertTriangle,
+        title: `Approval readiness: ${specWorkflow.approvalReadiness.score}%`,
+        description: specWorkflow.approvalReadiness.blockers.length > 0
+          ? `Blockers: ${specWorkflow.approvalReadiness.blockers.join(". ")}`
+          : `All factors passing. ${spec.status === "draft" ? "Ready to submit for review." : spec.status === "review" ? "Ready for approval." : "Specification approved."}`,
+        metric: `${specWorkflow.approvalReadiness.score}%`, metricLabel: "readiness",
+        confidence: 92,
+        tags: specWorkflow.approvalReadiness.blockers.length > 0 ? ["Blockers"] : ["Ready"],
+      });
+
+      // Missing items
+      if (specWorkflow.missingItems.length > 0) {
+        ins.push({
+          id: "sp-missing", type: "warning", icon: AlertCircle,
+          title: `${specWorkflow.missingItems.length} missing item${specWorkflow.missingItems.length > 1 ? "s" : ""} detected`,
+          description: specWorkflow.missingItems.slice(0, 3).map(m => `${m.room}: needs ${m.category}`).join(". ") + (specWorkflow.missingItems.length > 3 ? `. +${specWorkflow.missingItems.length - 3} more.` : ""),
+          confidence: 80,
+          tags: ["Gaps"],
+        });
       }
+
+      // Substitute suggestions
+      if (specWorkflow.substitutes.length > 0) {
+        const topSub = specWorkflow.substitutes[0];
+        ins.push({
+          id: "sp-subs", type: "opportunity", icon: Package,
+          title: `${specWorkflow.substitutes.length} higher-performing alternative${specWorkflow.substitutes.length > 1 ? "s" : ""} available`,
+          description: `${topSub.currentProduct} (${topSub.room}) → ${topSub.alternative.name}: ${topSub.alternative.reason}. ${specWorkflow.substitutes.length > 1 ? `+${specWorkflow.substitutes.length - 1} more substitution${specWorkflow.substitutes.length > 2 ? "s" : ""}.` : ""}`,
+          confidence: 76,
+          actions: [{ label: "View alternatives" }],
+          tags: ["AI Suggestion"],
+        });
+      }
+
+      // Lead time warnings
+      const highLeadTime = specWorkflow.leadTimeWarnings.filter(w => w.severity === "high");
+      if (highLeadTime.length > 0) {
+        ins.push({
+          id: "sp-lead", type: "warning", icon: Truck,
+          title: `${highLeadTime.length} item${highLeadTime.length > 1 ? "s" : ""} with long lead times`,
+          description: highLeadTime.map(w => `${w.productName}: ~${w.estimatedWeeks} weeks (${w.status})`).join(". "),
+          metric: `${highLeadTime[0].estimatedWeeks}w`, metricLabel: "longest lead",
+          confidence: 85,
+          tags: ["Supply Chain"],
+        });
+      }
+
+      // Budget
+      ins.push({
+        id: "sp-budget", type: "recommendation", icon: DollarSign,
+        title: `Budget: $${specWorkflow.budgetImpact.totalEstimate.toLocaleString()}`,
+        description: `${specWorkflow.budgetImpact.byRoom.length} rooms. Largest: ${specWorkflow.budgetImpact.byRoom[0]?.room} (${specWorkflow.budgetImpact.byRoom[0]?.pct}%).${specWorkflow.budgetImpact.potentialSavings > 0 ? ` $${specWorkflow.budgetImpact.potentialSavings.toLocaleString()} potential savings via substitutes.` : ""}`,
+        metric: `$${(specWorkflow.budgetImpact.totalEstimate / 1000).toFixed(1)}k`, metricLabel: "total",
+        confidence: 70,
+        tags: ["Budget"],
+      });
+
+      // Pipeline status
+      if (specified > 0) {
+        ins.push({
+          id: "sp-pipeline", type: "action", icon: ClipboardList,
+          title: `${specified} items awaiting order`,
+          description: `${installed}/${totalItems} installed. ${specified} still at "specified" status need to be ordered to advance the pipeline.`,
+          confidence: 95,
+          tags: ["Pipeline"],
+        });
+      }
+
+      return ins;
+    }
+
+    case "specifications": {
       return [
         {
           id: "sps-1", type: "recommendation", icon: ClipboardList,
@@ -1152,6 +1445,220 @@ function MissingCategoriesPanel({ categories }: { categories: ProjectWorkflowDat
   );
 }
 
+// ─── Spec Workflow Panels ───────────────────────────────────────────────────
+
+function ApprovalReadinessPanel({ data }: { data: SpecWorkflowData["approvalReadiness"] }) {
+  const circumference = 2 * Math.PI * 28;
+  const filled = (data.score / 100) * circumference;
+  const color = data.score >= 75 ? "#10b981" : data.score >= 50 ? "#f59e0b" : "#f43f5e";
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-3.5">
+      <div className="flex items-center gap-2 mb-3">
+        <Shield size={12} className="text-muted" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Approval Readiness</span>
+      </div>
+      <div className="flex items-center gap-4 mb-3">
+        <div className="relative shrink-0">
+          <svg width="68" height="68" viewBox="0 0 68 68">
+            <circle cx="34" cy="34" r="28" fill="none" stroke="#e5e5e5" strokeWidth="4" />
+            <circle cx="34" cy="34" r="28" fill="none" stroke={color} strokeWidth="4"
+              strokeDasharray={circumference} strokeDashoffset={circumference - filled}
+              strokeLinecap="round" transform="rotate(-90 34 34)" />
+            <text x="34" y="32" textAnchor="middle" className="text-[14px] font-bold" fill="#0a0a0a">{data.score}%</text>
+            <text x="34" y="44" textAnchor="middle" className="text-[8px]" fill="#737373">ready</text>
+          </svg>
+        </div>
+        <div className="flex-1 space-y-1.5">
+          {data.factors.map(f => (
+            <div key={f.name}>
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[9px] font-medium">{f.name}</span>
+                <span className={`text-[9px] font-semibold ${
+                  f.status === "pass" ? "text-emerald" : f.status === "warn" ? "text-amber" : "text-rose"
+                }`}>{f.score}/{f.maxScore}</span>
+              </div>
+              <div className="h-1 rounded-full bg-surface overflow-hidden">
+                <div className={`h-full rounded-full transition-all ${
+                  f.status === "pass" ? "bg-emerald" : f.status === "warn" ? "bg-amber" : "bg-rose"
+                }`} style={{ width: `${(f.score / f.maxScore) * 100}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      {data.blockers.length > 0 && (
+        <div className="rounded-lg bg-rose-light/30 p-2">
+          <p className="text-[9px] font-semibold text-rose mb-1">Blockers</p>
+          {data.blockers.map((b, i) => (
+            <p key={i} className="text-[9px] text-rose/80 flex items-start gap-1">
+              <AlertTriangle size={8} className="shrink-0 mt-0.5" />{b}
+            </p>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LeadTimePanel({ warnings }: { warnings: SpecWorkflowData["leadTimeWarnings"] }) {
+  if (warnings.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-3.5">
+      <div className="flex items-center gap-2 mb-3">
+        <Truck size={12} className="text-muted" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Lead Time Warnings</span>
+        <span className="ml-auto text-[10px] font-semibold text-rose">{warnings.filter(w => w.severity === "high").length} critical</span>
+      </div>
+      <div className="space-y-2">
+        {warnings.map((w, i) => {
+          const severityBg = w.severity === "high" ? "border-rose/20 bg-rose-light/10" : w.severity === "medium" ? "border-amber/20 bg-amber-light/10" : "border-border";
+          return (
+            <div key={i} className={`rounded-lg border ${severityBg} p-2`}>
+              <div className="flex items-center justify-between mb-0.5">
+                <span className="text-[10px] font-semibold">{w.productName}</span>
+                <span className={`text-[10px] font-bold ${w.severity === "high" ? "text-rose" : "text-amber"}`}>{w.estimatedWeeks}w</span>
+              </div>
+              <div className="flex items-center gap-2 text-[9px] text-muted">
+                <span>{w.brand}</span>
+                <span>·</span>
+                <span>{w.room}</span>
+                <span>·</span>
+                <span className={`rounded px-1 py-0.5 text-[8px] font-semibold ${
+                  w.status === "specified" ? "bg-surface text-muted" : "bg-blue-light text-blue"
+                }`}>{w.status}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SpecBudgetPanel({ data }: { data: SpecWorkflowData["budgetImpact"] }) {
+  const maxAmount = Math.max(...data.byRoom.map(r => r.amount));
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-3.5">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <DollarSign size={12} className="text-muted" />
+          <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Budget Impact</span>
+        </div>
+        <span className="text-[13px] font-bold">${data.totalEstimate.toLocaleString()}</span>
+      </div>
+      {/* By Room */}
+      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted mb-1.5">By Room</p>
+      <div className="space-y-2 mb-3">
+        {data.byRoom.sort((a, b) => b.amount - a.amount).map(r => (
+          <div key={r.room}>
+            <div className="flex items-center justify-between mb-0.5">
+              <span className="text-[10px] font-medium">{r.room}</span>
+              <span className="text-[10px] text-muted">${r.amount.toLocaleString()} ({r.pct}%)</span>
+            </div>
+            <div className="h-1.5 rounded-full bg-surface overflow-hidden">
+              <div className="h-full bg-foreground/60 rounded-full" style={{ width: `${maxAmount > 0 ? (r.amount / maxAmount) * 100 : 0}%` }} />
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* By Status */}
+      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted mb-1.5">By Status</p>
+      <div className="flex items-center gap-2 flex-wrap">
+        {data.byStatus.map(s => {
+          const statusColors: Record<string, string> = { installed: "bg-emerald", delivered: "bg-amber", ordered: "bg-blue", specified: "bg-border" };
+          return (
+            <div key={s.status} className="flex items-center gap-1.5 rounded-lg bg-surface px-2 py-1">
+              <span className={`h-2 w-2 rounded-full ${statusColors[s.status] || "bg-muted"}`} />
+              <span className="text-[9px] font-medium">{s.status}</span>
+              <span className="text-[9px] text-muted">${s.amount.toLocaleString()}</span>
+            </div>
+          );
+        })}
+      </div>
+      {data.potentialSavings > 0 && (
+        <div className="mt-3 pt-2 border-t border-border flex items-center justify-between">
+          <span className="text-[10px] text-muted flex items-center gap-1"><Lightbulb size={10} className="text-emerald" />Potential savings</span>
+          <span className="text-[10px] font-semibold text-emerald">${data.potentialSavings.toLocaleString()}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MissingItemsPanel({ items }: { items: SpecWorkflowData["missingItems"] }) {
+  if (items.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-3.5">
+      <div className="flex items-center gap-2 mb-3">
+        <AlertCircle size={12} className="text-muted" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Missing Items</span>
+        <span className="ml-auto text-[10px] font-semibold text-amber">{items.length} gaps</span>
+      </div>
+      <div className="space-y-2">
+        {items.slice(0, 5).map((m, i) => (
+          <div key={i} className="rounded-lg border border-border p-2">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-semibold">{m.room}</span>
+              <span className="rounded px-1.5 py-0.5 text-[8px] font-semibold bg-amber-light text-amber">{m.category}</span>
+            </div>
+            {m.suggestion && (
+              <Link href={`/products/${m.suggestion.id}`} className="flex items-center justify-between mt-1 hover:bg-surface/50 rounded p-0.5 transition-colors">
+                <span className="text-[9px] text-muted">Suggested: {m.suggestion.name}</span>
+                <div className="flex items-center gap-1">
+                  <span className="text-[8px] text-muted">{m.suggestion.price}</span>
+                  {m.suggestion.momentum > 0 && (
+                    <span className="flex items-center gap-0.5 text-[8px] text-emerald font-semibold">
+                      <TrendingUp size={7} />{m.suggestion.momentum}
+                    </span>
+                  )}
+                </div>
+              </Link>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SubstitutePanel({ substitutes }: { substitutes: SpecWorkflowData["substitutes"] }) {
+  if (substitutes.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-3.5">
+      <div className="flex items-center gap-2 mb-3">
+        <Zap size={12} className="text-muted" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Product Substitutes</span>
+      </div>
+      <div className="space-y-2">
+        {substitutes.map((sub, i) => (
+          <div key={i} className="rounded-lg border border-border p-2">
+            <div className="flex items-center gap-1.5 mb-1.5">
+              <span className="text-[10px] font-medium line-through text-muted">{sub.currentProduct}</span>
+              <ArrowRight size={10} className="text-muted shrink-0" />
+              <span className="text-[10px] font-semibold">{sub.alternative.name}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[9px] text-muted">{sub.room} · {sub.alternative.brand}</span>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[9px] text-muted">{sub.alternative.price}</span>
+                <span className="flex items-center gap-0.5 text-[8px] text-emerald font-semibold">
+                  <TrendingUp size={7} />{sub.alternative.momentum}
+                </span>
+              </div>
+            </div>
+            <p className="text-[8px] text-emerald mt-1">{sub.alternative.reason}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Component ─────────────────────────────────────────────────────────
 
 export function AICopilot() {
@@ -1169,10 +1676,16 @@ export function AICopilot() {
     context === "project-detail" && entityId ? computeProjectWorkflow(entityId) : null,
     [context, entityId]
   );
+  const specWorkflow = useMemo(() =>
+    context === "spec-detail" && entityId ? computeSpecWorkflow(entityId) : null,
+    [context, entityId]
+  );
 
   // Reset panel when context changes
   useEffect(() => {
-    setActivePanel(context === "project-detail" ? "overview" : "insights");
+    if (context === "project-detail") setActivePanel("overview");
+    else if (context === "spec-detail") setActivePanel("overview");
+    else setActivePanel("insights");
   }, [context, entityId]);
 
   // Auto-expand first insight
@@ -1189,6 +1702,14 @@ export function AICopilot() {
         { icon: DollarSign, label: "Est. Cost", value: `$${(projectWorkflow.costEstimate.totalEstimate / 1000).toFixed(1)}k`, sub: `${projectWorkflow.costEstimate.breakdown.length} categories` },
         { icon: Package, label: "Products", value: `${proj?.products.length || 0}`, sub: `${projectWorkflow.missingCategories.length} gaps` },
         { icon: Users, label: "Arch Fit", value: `${projectWorkflow.architectFit.currentArchitect.fitScore}%`, sub: projectWorkflow.architectFit.currentArchitect.tier },
+      ];
+    }
+    if (context === "spec-detail" && specWorkflow) {
+      return [
+        { icon: Shield, label: "Readiness", value: `${specWorkflow.approvalReadiness.score}%`, sub: specWorkflow.approvalReadiness.specStatus },
+        { icon: DollarSign, label: "Budget", value: `$${(specWorkflow.budgetImpact.totalEstimate / 1000).toFixed(1)}k`, sub: `${specWorkflow.budgetImpact.byRoom.length} rooms` },
+        { icon: AlertCircle, label: "Gaps", value: `${specWorkflow.missingItems.length}`, sub: `${specWorkflow.substitutes.length} subs` },
+        { icon: Truck, label: "Lead Time", value: specWorkflow.leadTimeWarnings.length > 0 ? `${specWorkflow.leadTimeWarnings[0].estimatedWeeks}w` : "OK", sub: `${specWorkflow.leadTimeWarnings.filter(w => w.severity === "high").length} critical` },
       ];
     }
     switch (context) {
@@ -1222,11 +1743,17 @@ export function AICopilot() {
     }
   }, [context, entityId, projectWorkflow]);
 
-  // Project detail panel tabs
+  // Panel tabs for detail pages
   const projectPanelTabs = [
     { key: "overview", label: "Overview" },
     { key: "products", label: "Products" },
     { key: "gaps", label: "Gaps" },
+    { key: "insights", label: "Insights" },
+  ];
+  const specPanelTabs = [
+    { key: "overview", label: "Overview" },
+    { key: "supply", label: "Supply" },
+    { key: "budget", label: "Budget" },
     { key: "insights", label: "Insights" },
   ];
 
@@ -1284,11 +1811,11 @@ export function AICopilot() {
         </div>
       </div>
 
-      {/* Panel Tabs (for project-detail) */}
-      {context === "project-detail" && projectWorkflow && (
+      {/* Panel Tabs (for detail pages) */}
+      {((context === "project-detail" && projectWorkflow) || (context === "spec-detail" && specWorkflow)) && (
         <div className="shrink-0 px-4 pt-2 pb-0 border-b border-border">
           <div className="flex items-center gap-0">
-            {projectPanelTabs.map(tab => (
+            {(context === "project-detail" ? projectPanelTabs : specPanelTabs).map(tab => (
               <button key={tab.key} onClick={() => setActivePanel(tab.key)}
                 className={`relative px-3 py-2 text-[10px] font-semibold transition-colors ${
                   activePanel === tab.key ? "text-foreground" : "text-muted hover:text-foreground"
@@ -1368,8 +1895,71 @@ export function AICopilot() {
           </div>
         )}
 
+        {/* ── Spec Detail: Overview Panel ── */}
+        {context === "spec-detail" && specWorkflow && activePanel === "overview" && (
+          <div className="space-y-3">
+            <ApprovalReadinessPanel data={specWorkflow.approvalReadiness} />
+            <MissingItemsPanel items={specWorkflow.missingItems} />
+            <SubstitutePanel substitutes={specWorkflow.substitutes} />
+          </div>
+        )}
+
+        {/* ── Spec Detail: Supply Panel ── */}
+        {context === "spec-detail" && specWorkflow && activePanel === "supply" && (
+          <div className="space-y-3">
+            <LeadTimePanel warnings={specWorkflow.leadTimeWarnings} />
+
+            {/* All items by status */}
+            <div className="rounded-xl border border-border bg-white p-3.5">
+              <div className="flex items-center gap-2 mb-3">
+                <Package size={12} className="text-muted" />
+                <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Pipeline Status</span>
+              </div>
+              {(() => {
+                const spec = specifications.find(s => s.id === entityId);
+                if (!spec) return null;
+                const allItems = spec.rooms.flatMap(r => r.items.map(i => ({ ...i, roomName: r.name })));
+                const statuses = ["specified", "ordered", "delivered", "installed"] as const;
+                return (
+                  <div className="space-y-3">
+                    {statuses.map(status => {
+                      const items = allItems.filter(i => i.status === status);
+                      if (items.length === 0) return null;
+                      const statusBg: Record<string, string> = { specified: "bg-surface", ordered: "bg-blue-light", delivered: "bg-amber-light", installed: "bg-emerald-light" };
+                      const statusText: Record<string, string> = { specified: "text-muted", ordered: "text-blue", delivered: "text-amber", installed: "text-emerald" };
+                      return (
+                        <div key={status}>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold ${statusBg[status]} ${statusText[status]}`}>{status}</span>
+                            <span className="text-[9px] text-muted">{items.length} items</span>
+                          </div>
+                          <div className="space-y-1">
+                            {items.map((item, i) => (
+                              <div key={i} className="flex items-center justify-between px-1 py-0.5">
+                                <span className="text-[9px] font-medium truncate flex-1">{item.productName}</span>
+                                <span className="text-[8px] text-muted shrink-0 ml-2">{item.roomName}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* ── Spec Detail: Budget Panel ── */}
+        {context === "spec-detail" && specWorkflow && activePanel === "budget" && (
+          <div className="space-y-3">
+            <SpecBudgetPanel data={specWorkflow.budgetImpact} />
+          </div>
+        )}
+
         {/* ── Insights Panel (default or insights tab) ── */}
-        {(activePanel === "insights" || !(context === "project-detail" && projectWorkflow)) && (
+        {(activePanel === "insights" || !((context === "project-detail" && projectWorkflow) || (context === "spec-detail" && specWorkflow))) && (
           <div>
             <div className="flex items-center justify-between mb-3">
               <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted">
