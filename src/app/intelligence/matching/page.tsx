@@ -51,6 +51,9 @@ import {
   CheckCircle2,
   XCircle,
   ArrowRight,
+  Hexagon,
+  Gem,
+  Wrench,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -830,26 +833,220 @@ function computeRoomMatches(): RoomMatch[] {
   });
 }
 
-function computeStyleMaterialMatrix() {
+// ─── Style Intelligence Types ─────────────────────────────────────────────────
+
+interface MaterialPair {
+  matA: string;
+  matB: string;
+  compatibility: number;
+  label: string;
+  tier: "premium" | "practical";
+}
+
+interface StyleArchitectLink {
+  architectId: string;
+  architectName: string;
+  alignment: number;
+  materialOverlap: number;
+  categoryStrength: number;
+  projectCount: number;
+  projectNames: string[];
+}
+
+interface StyleProductLink {
+  product: Product;
+  fitScore: number;
+  trendAlign: number;
+  projectUsage: number;
+  architectAdoption: number;
+}
+
+interface StyleProfile {
+  style: string;
+  topCategories: { category: string; count: number }[];
+  topArchitects: StyleArchitectLink[];
+  topProducts: StyleProductLink[];
+  topBrands: { brandId: string; brandName: string; productCount: number; score: number }[];
+  topMaterials: string[];
+  strongestCombinations: { partner: string; strength: number }[];
+  totalUsage: number;
+}
+
+interface StyleMaterialIntel {
+  styles: string[];
+  categories: string[];
+  matrix: Record<string, Record<string, number>>;
+  materialPairs: MaterialPair[];
+  styleProfiles: StyleProfile[];
+  graphNodes: { id: string; type: "style" | "material" | "architect" | "brand" | "product"; label: string }[];
+  graphEdges: { from: string; to: string; weight: number }[];
+}
+
+function computeStyleMaterialMatrix(): StyleMaterialIntel {
+  const seed = (s: string) => { let h = 0; for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0; return Math.abs(h); };
+
   const styles = [...new Set(projects.flatMap((p) => p.tags))];
   const categories = [...new Set(products.map((p) => p.category))];
 
+  // ── Basic matrix ──
   const matrix: Record<string, Record<string, number>> = {};
-  styles.forEach((s) => {
-    matrix[s] = {};
-    categories.forEach((c) => (matrix[s][c] = 0));
-  });
-
+  styles.forEach((s) => { matrix[s] = {}; categories.forEach((c) => (matrix[s][c] = 0)); });
   projects.forEach((proj) => {
     const projProducts = proj.products.map((pid) => products.find((p) => p.id === pid)).filter(Boolean);
     proj.tags.forEach((tag) => {
-      projProducts.forEach((p) => {
-        if (matrix[tag]) matrix[tag][p!.category] = (matrix[tag][p!.category] || 0) + 1;
-      });
+      projProducts.forEach((p) => { if (matrix[tag]) matrix[tag][p!.category] = (matrix[tag][p!.category] || 0) + 1; });
     });
   });
 
-  return { styles, categories, matrix };
+  // ── Material compatibility pairs ──
+  const materialDefs: [string, string, string, "premium" | "practical"][] = [
+    ["Timber", "Stone", "Natural warmth pairing", "premium"],
+    ["Oak Flooring", "Lime Plaster", "Organic texture harmony", "premium"],
+    ["Travertine", "Brushed Brass", "Luxury mediterranean set", "premium"],
+    ["Concrete", "Black Steel", "Industrial minimal set", "practical"],
+    ["Engineered Timber", "Matte Hardware", "Modern practical core", "practical"],
+    ["Ceramic Tile", "Chrome Tapware", "Classic bathroom set", "practical"],
+    ["Natural Stone", "Brass Hardware", "Premium classic pairing", "premium"],
+    ["Marble", "Glass Pendant", "High-end lighting pair", "premium"],
+    ["Vinyl Plank", "Stainless Appliance", "Budget kitchen core", "practical"],
+    ["Hardwood", "Linen Upholstery", "Warm modern living set", "premium"],
+  ];
+  const materialPairs: MaterialPair[] = materialDefs.map(([matA, matB, label, tier]) => ({
+    matA, matB, compatibility: clamp(55 + seed(matA + matB) % 40, 0, 100), label, tier,
+  }));
+
+  // ── Style profiles ──
+  const styleProfiles: StyleProfile[] = styles.map((style) => {
+    const styleProjects = projects.filter((p) => p.tags.includes(style));
+    const styleProdIds = new Set(styleProjects.flatMap((p) => p.products));
+    const styleProducts = products.filter((p) => styleProdIds.has(p.id));
+
+    // Top categories
+    const catCounts: Record<string, number> = {};
+    styleProducts.forEach((p) => { catCounts[p.category] = (catCounts[p.category] || 0) + 1; });
+    const topCategories = Object.entries(catCounts)
+      .map(([category, count]) => ({ category, count }))
+      .sort((a, b) => b.count - a.count);
+
+    // Top architects
+    const archMap: Record<string, { projects: string[]; cats: Set<string>; mats: Set<string> }> = {};
+    styleProjects.forEach((proj) => {
+      if (!archMap[proj.architectId]) archMap[proj.architectId] = { projects: [], cats: new Set(), mats: new Set() };
+      archMap[proj.architectId].projects.push(proj.title);
+      proj.products.forEach((pid) => {
+        const p = products.find((pr) => pr.id === pid);
+        if (p) { archMap[proj.architectId].cats.add(p.category); archMap[proj.architectId].mats.add(p.category); }
+      });
+    });
+    const topArchitects: StyleArchitectLink[] = Object.entries(archMap).map(([archId, data]) => {
+      const arch = architects.find((a) => a.id === archId);
+      const matOverlap = clamp(Math.round((data.mats.size / Math.max(categories.length, 1)) * 100), 0, 100);
+      const catStrength = clamp(Math.round((data.cats.size / Math.max(categories.length, 1)) * 100), 0, 100);
+      return {
+        architectId: archId,
+        architectName: arch?.name || archId,
+        alignment: clamp(Math.round(catStrength * 0.4 + matOverlap * 0.3 + data.projects.length * 15), 0, 100),
+        materialOverlap: matOverlap,
+        categoryStrength: catStrength,
+        projectCount: data.projects.length,
+        projectNames: data.projects,
+      };
+    }).sort((a, b) => b.alignment - a.alignment);
+
+    // Top products
+    const topProducts: StyleProductLink[] = styleProducts.map((p) => {
+      const mom = productMomentumData.find((m) => m.productId === p.id);
+      const trendMap: Record<string, number> = { surging: 90, rising: 70, steady: 45, cooling: 20 };
+      const trendAlign = clamp((trendMap[mom?.trend || "steady"] || 45) + seed(p.id + style + "ta") % 15, 0, 100);
+      const usageProjects = styleProjects.filter((pr) => pr.products.includes(p.id));
+      const adoptingArchitects = [...new Set(usageProjects.map((pr) => pr.architectId))];
+      return {
+        product: p,
+        fitScore: clamp(40 + seed(p.id + style + "fs") % 50, 0, 100),
+        trendAlign,
+        projectUsage: usageProjects.length,
+        architectAdoption: adoptingArchitects.length,
+      };
+    }).sort((a, b) => b.fitScore - a.fitScore);
+
+    // Top brands
+    const brandMap: Record<string, { name: string; count: number }> = {};
+    styleProducts.forEach((p) => {
+      if (!brandMap[p.brandId]) brandMap[p.brandId] = { name: p.brand, count: 0 };
+      brandMap[p.brandId].count++;
+    });
+    const topBrands = Object.entries(brandMap)
+      .map(([brandId, info]) => ({ brandId, brandName: info.name, productCount: info.count, score: clamp(30 + info.count * 15 + seed(brandId + style) % 20, 0, 100) }))
+      .sort((a, b) => b.score - a.score);
+
+    // Top materials (derived from categories)
+    const topMaterials = topCategories.slice(0, 4).map((c) => c.category);
+
+    // Strongest style combinations
+    const strongestCombinations = styles
+      .filter((s2) => s2 !== style)
+      .map((s2) => {
+        const overlap = categories.reduce((sum, c) => sum + Math.min(matrix[style]?.[c] || 0, matrix[s2]?.[c] || 0), 0);
+        return { partner: s2, strength: clamp(overlap * 12 + seed(style + s2) % 15, 0, 100) };
+      })
+      .sort((a, b) => b.strength - a.strength)
+      .slice(0, 3);
+
+    return {
+      style,
+      topCategories,
+      topArchitects,
+      topProducts,
+      topBrands,
+      topMaterials,
+      strongestCombinations,
+      totalUsage: styleProducts.length,
+    };
+  });
+
+  // ── Relationship graph ──
+  const graphNodes: StyleMaterialIntel["graphNodes"] = [];
+  const graphEdges: StyleMaterialIntel["graphEdges"] = [];
+
+  styles.forEach((s) => graphNodes.push({ id: `s-${s}`, type: "style", label: s }));
+  categories.forEach((c) => graphNodes.push({ id: `m-${c}`, type: "material", label: c }));
+
+  const archInGraph = new Set<string>();
+  const brandInGraph = new Set<string>();
+  const prodInGraph = new Set<string>();
+
+  styleProfiles.forEach((sp) => {
+    // style → material edges
+    sp.topCategories.forEach((tc) => {
+      if (tc.count > 0) graphEdges.push({ from: `s-${sp.style}`, to: `m-${tc.category}`, weight: tc.count });
+    });
+    // style → architect edges
+    sp.topArchitects.slice(0, 2).forEach((a) => {
+      if (!archInGraph.has(a.architectId)) {
+        graphNodes.push({ id: `a-${a.architectId}`, type: "architect", label: a.architectName });
+        archInGraph.add(a.architectId);
+      }
+      graphEdges.push({ from: `s-${sp.style}`, to: `a-${a.architectId}`, weight: a.alignment });
+    });
+    // style → brand edges
+    sp.topBrands.slice(0, 2).forEach((b) => {
+      if (!brandInGraph.has(b.brandId)) {
+        graphNodes.push({ id: `b-${b.brandId}`, type: "brand", label: b.brandName });
+        brandInGraph.add(b.brandId);
+      }
+      graphEdges.push({ from: `s-${sp.style}`, to: `b-${b.brandId}`, weight: b.score });
+    });
+    // style → top product edges
+    sp.topProducts.slice(0, 2).forEach((p) => {
+      if (!prodInGraph.has(p.product.id)) {
+        graphNodes.push({ id: `p-${p.product.id}`, type: "product", label: p.product.name });
+        prodInGraph.add(p.product.id);
+      }
+      graphEdges.push({ from: `s-${sp.style}`, to: `p-${p.product.id}`, weight: p.fitScore });
+    });
+  });
+
+  return { styles, categories, matrix, materialPairs, styleProfiles, graphNodes, graphEdges };
 }
 
 function computeRecommendationLogic(): RecommendationSignal[] {
@@ -2729,148 +2926,485 @@ function RoomMatchingSection({ roomMatches }: { roomMatches: RoomMatch[] }) {
 
 // ─── Section 5: Style & Material ──────────────────────────────────────────────
 
-function StyleMaterialHeatmap({ styles, categories, matrix }: { styles: string[]; categories: string[]; matrix: Record<string, Record<string, number>> }) {
+function StyleMaterialSection({ styleMaterial }: { styleMaterial: StyleMaterialIntel }) {
+  const [expandedStyle, setExpandedStyle] = useState<string | null>(null);
+  const [savedProfiles, setSavedProfiles] = useState<Set<string>>(new Set());
+  const [shortlisted, setShortlisted] = useState<Set<string>>(new Set());
+  const [appliedToBoard, setAppliedToBoard] = useState<Set<string>>(new Set());
+  const [appliedToBrief, setAppliedToBrief] = useState<Set<string>>(new Set());
+  const [matTier, setMatTier] = useState<"all" | "premium" | "practical">("all");
+  const [graphHover, setGraphHover] = useState<string | null>(null);
+
+  const { styles, categories, matrix, materialPairs, styleProfiles, graphNodes, graphEdges } = styleMaterial;
   const maxVal = Math.max(...styles.flatMap((s) => categories.map((c) => matrix[s]?.[c] || 0)), 1);
 
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse">
-        <thead>
-          <tr>
-            <th className="p-2 text-[10px] font-semibold text-muted text-left sticky left-0 bg-white z-10" />
-            {categories.map((c) => (
-              <th key={c} className="p-2 text-[9px] font-semibold text-muted text-center whitespace-nowrap">{c}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {styles.map((s) => (
-            <tr key={s}>
-              <td className="p-2 text-[10px] font-semibold text-foreground whitespace-nowrap sticky left-0 bg-white z-10">{s}</td>
-              {categories.map((c) => {
-                const val = matrix[s]?.[c] || 0;
-                const intensity = val / maxVal;
-                return (
-                  <td key={c} className="p-1 text-center">
-                    <div
-                      className="mx-auto flex h-8 w-10 items-center justify-center rounded-md text-[10px] font-bold transition-all"
-                      style={{
-                        backgroundColor: val > 0 ? `rgba(10,10,10,${0.08 + intensity * 0.82})` : "#fafafa",
-                        color: intensity > 0.5 ? "#fff" : "#737373",
-                      }}
-                    >
-                      {val || "—"}
-                    </div>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
+  const filteredPairs = matTier === "all" ? materialPairs : materialPairs.filter((p) => p.tier === matTier);
 
-function RelationshipMap({ styles, categories, matrix }: { styles: string[]; categories: string[]; matrix: Record<string, Record<string, number>> }) {
-  const w = 700;
-  const h = 400;
-  const leftX = 120;
-  const rightX = 580;
-  const [hoveredStyle, setHoveredStyle] = useState<string | null>(null);
+  const toggleSaveProfile = (s: string) => { const n = new Set(savedProfiles); if (n.has(s)) n.delete(s); else n.add(s); setSavedProfiles(n); };
+  const toggleApplyBoard = (s: string) => { const n = new Set(appliedToBoard); if (n.has(s)) n.delete(s); else n.add(s); setAppliedToBoard(n); };
+  const toggleApplyBrief = (s: string) => { const n = new Set(appliedToBrief); if (n.has(s)) n.delete(s); else n.add(s); setAppliedToBrief(n); };
 
-  const stylePositions = styles.map((s, i) => ({ label: s, y: 40 + (i * (h - 80)) / Math.max(styles.length - 1, 1) }));
-  const catPositions = categories.map((c, i) => ({ label: c, y: 40 + (i * (h - 80)) / Math.max(categories.length - 1, 1) }));
-  const maxVal = Math.max(...styles.flatMap((s) => categories.map((c) => matrix[s]?.[c] || 0)), 1);
-
-  return (
-    <svg viewBox={`0 0 ${w} ${h}`} className="w-full">
-      {stylePositions.map((sp) =>
-        catPositions.map((cp) => {
-          const val = matrix[sp.label]?.[cp.label] || 0;
-          if (val === 0) return null;
-          const opacity = hoveredStyle ? (hoveredStyle === sp.label ? 0.15 + (val / maxVal) * 0.7 : 0.03) : 0.08 + (val / maxVal) * 0.4;
-          const strokeW = 1 + (val / maxVal) * 5;
-          return (
-            <path key={`${sp.label}-${cp.label}`} d={`M ${leftX + 60} ${sp.y} C ${leftX + 180} ${sp.y}, ${rightX - 180} ${cp.y}, ${rightX - 60} ${cp.y}`} fill="none" stroke="#0a0a0a" strokeWidth={strokeW} opacity={opacity} />
-          );
-        })
-      )}
-      {stylePositions.map((sp) => (
-        <g key={sp.label} onMouseEnter={() => setHoveredStyle(sp.label)} onMouseLeave={() => setHoveredStyle(null)} className="cursor-pointer">
-          <rect x={leftX - 60} y={sp.y - 12} width={120} height={24} rx={12} fill={hoveredStyle === sp.label ? "#0a0a0a" : "#f5f5f5"} stroke="#e5e5e5" strokeWidth={1} />
-          <text x={leftX} y={sp.y + 4} textAnchor="middle" className="text-[10px] font-semibold" fill={hoveredStyle === sp.label ? "#fff" : "#0a0a0a"}>{sp.label}</text>
-        </g>
-      ))}
-      {catPositions.map((cp) => {
-        const totalForCat = styles.reduce((sum, s) => sum + (matrix[s]?.[cp.label] || 0), 0);
-        return (
-          <g key={cp.label}>
-            <rect x={rightX - 60} y={cp.y - 12} width={120} height={24} rx={12} fill="#fafafa" stroke="#e5e5e5" strokeWidth={1} />
-            <text x={rightX} y={cp.y + 4} textAnchor="middle" className="text-[10px] font-medium" fill="#737373">{cp.label}</text>
-            <text x={rightX + 70} y={cp.y + 4} textAnchor="start" className="text-[9px] font-bold" fill="#0a0a0a">{totalForCat}</text>
-          </g>
-        );
-      })}
-      <text x={leftX} y={16} textAnchor="middle" className="text-[9px] font-semibold uppercase tracking-widest" fill="#a3a3a3">Style Tags</text>
-      <text x={rightX} y={16} textAnchor="middle" className="text-[9px] font-semibold uppercase tracking-widest" fill="#a3a3a3">Categories</text>
-    </svg>
-  );
-}
-
-function StyleMaterialSection({ styleMaterial }: { styleMaterial: { styles: string[]; categories: string[]; matrix: Record<string, Record<string, number>> } }) {
   return (
     <div className="space-y-6">
+
+      {/* 1. Style Profile Matrix — Heatmap */}
       <div className="rounded-2xl border border-border bg-white p-6">
         <div className="flex items-center gap-3 mb-5">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground"><Grid3x3 size={16} className="text-white" /></div>
           <div>
-            <h2 className="text-[14px] font-semibold">Style × Category Compatibility Matrix</h2>
-            <p className="text-[11px] text-muted">Product usage frequency across style tags and product categories</p>
+            <h2 className="text-[14px] font-semibold">Style × Material × Product Matrix</h2>
+            <p className="text-[11px] text-muted">Weighted relationship scores across styles, materials, products, brands, and architects</p>
           </div>
         </div>
-        <StyleMaterialHeatmap styles={styleMaterial.styles} categories={styleMaterial.categories} matrix={styleMaterial.matrix} />
-        <p className="mt-4 text-[10px] text-muted text-center">Darker cells indicate higher product usage. Data from {projects.length} projects and {products.length} products.</p>
+
+        <div className="overflow-x-auto">
+          <table className="w-full border-collapse">
+            <thead>
+              <tr>
+                <th className="p-2 text-[10px] font-semibold text-muted text-left sticky left-0 bg-white z-10" />
+                {categories.map((c) => (
+                  <th key={c} className="p-2 text-[9px] font-semibold text-muted text-center whitespace-nowrap">{c}</th>
+                ))}
+                <th className="p-2 text-[9px] font-semibold text-muted text-center">Total</th>
+                <th className="p-2 text-[9px] font-semibold text-muted text-center">Strongest</th>
+              </tr>
+            </thead>
+            <tbody>
+              {styles.map((s) => {
+                const rowTotal = categories.reduce((sum, c) => sum + (matrix[s]?.[c] || 0), 0);
+                const best = categories.reduce((b, c) => (matrix[s]?.[c] || 0) > (matrix[s]?.[b] || 0) ? c : b, categories[0]);
+                const isExpanded = expandedStyle === s;
+                return (
+                  <tr key={s} className={`cursor-pointer transition-colors ${isExpanded ? "bg-surface/40" : "hover:bg-surface/20"}`} onClick={() => setExpandedStyle(isExpanded ? null : s)}>
+                    <td className="p-2 text-[10px] font-semibold text-foreground whitespace-nowrap sticky left-0 bg-white z-10">
+                      <div className="flex items-center gap-1.5">
+                        <ChevronRight size={10} className={`text-muted transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                        {s}
+                      </div>
+                    </td>
+                    {categories.map((c) => {
+                      const val = matrix[s]?.[c] || 0;
+                      const intensity = val / maxVal;
+                      return (
+                        <td key={c} className="p-1 text-center">
+                          <div className="mx-auto flex h-8 w-10 items-center justify-center rounded-md text-[10px] font-bold"
+                            style={{ backgroundColor: val > 0 ? `rgba(10,10,10,${0.08 + intensity * 0.82})` : "#fafafa", color: intensity > 0.5 ? "#fff" : "#737373" }}>
+                            {val || "—"}
+                          </div>
+                        </td>
+                      );
+                    })}
+                    <td className="p-2 text-center"><span className="text-[11px] font-bold">{rowTotal}</span></td>
+                    <td className="p-2 text-center"><span className="rounded-full bg-foreground/10 px-2 py-0.5 text-[9px] font-semibold">{best}</span></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-3 text-[10px] text-muted text-center">Click a style row to expand detail view. Darker cells = higher product usage. {projects.length} projects, {products.length} products.</p>
       </div>
 
+      {/* 7. Expandable Style Detail */}
+      {expandedStyle && (() => {
+        const profile = styleProfiles.find((p) => p.style === expandedStyle);
+        if (!profile) return null;
+
+        return (
+          <div className="rounded-2xl border border-foreground/20 ring-2 ring-foreground/5 bg-white overflow-hidden">
+            {/* Style header + actions */}
+            <div className="p-5 border-b border-border bg-surface/20">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-foreground">
+                    <Palette size={18} className="text-white" />
+                  </div>
+                  <div>
+                    <h3 className="text-[16px] font-bold">{profile.style}</h3>
+                    <p className="text-[11px] text-muted">{profile.totalUsage} products · {profile.topArchitects.length} architects · {profile.topBrands.length} brands</p>
+                  </div>
+                </div>
+                {/* 6. Action Layer */}
+                <div className="flex items-center gap-2">
+                  <button onClick={() => toggleSaveProfile(profile.style)}
+                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors ${savedProfiles.has(profile.style) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+                    <Bookmark size={10} /> {savedProfiles.has(profile.style) ? "Saved" : "Save Profile"}
+                  </button>
+                  <button onClick={() => toggleApplyBoard(profile.style)}
+                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors ${appliedToBoard.has(profile.style) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+                    <Plus size={10} /> {appliedToBoard.has(profile.style) ? "Applied to Board" : "Apply to Board"}
+                  </button>
+                  <button onClick={() => toggleApplyBrief(profile.style)}
+                    className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors ${appliedToBrief.has(profile.style) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+                    <FileText size={10} /> {appliedToBrief.has(profile.style) ? "Applied to Brief" : "Apply to Brief"}
+                  </button>
+                  <button onClick={() => { const next = new Set(shortlisted); profile.topProducts.forEach((p) => next.add(p.product.id)); setShortlisted(next); }}
+                    className="flex items-center gap-1.5 rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">
+                    <Star size={10} /> Shortlist Products
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5">
+              <div className="grid grid-cols-12 gap-6">
+
+                {/* Col 1: Top materials + strongest combos + radar */}
+                <div className="col-span-3 space-y-5">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Top Material Categories</p>
+                    <div className="space-y-2">
+                      {profile.topCategories.slice(0, 5).map((tc) => (
+                        <div key={tc.category} className="flex items-center gap-2">
+                          <span className="w-16 text-[10px] font-medium truncate">{tc.category}</span>
+                          <MatchBar score={profile.topCategories[0]?.count ? (tc.count / profile.topCategories[0].count) * 100 : 0} height={5} />
+                          <span className="text-[9px] font-bold text-muted w-4">{tc.count}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Strongest Combinations</p>
+                    <div className="space-y-1.5">
+                      {profile.strongestCombinations.map((combo) => (
+                        <div key={combo.partner} className="flex items-center justify-between rounded-lg bg-surface/50 px-3 py-2">
+                          <div className="flex items-center gap-1.5">
+                            <Link2 size={9} className="text-muted" />
+                            <span className="text-[10px] font-medium">{profile.style} + {combo.partner}</span>
+                          </div>
+                          <span className="text-[10px] font-bold">{combo.strength}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex justify-center">
+                    <RadarChart scores={[
+                      { label: "Products", value: clamp(profile.totalUsage * 15, 0, 100) },
+                      { label: "Architects", value: clamp(profile.topArchitects.length * 25, 0, 100) },
+                      { label: "Brands", value: clamp(profile.topBrands.length * 20, 0, 100) },
+                      { label: "Categories", value: clamp(profile.topCategories.length * 20, 0, 100) },
+                      { label: "Combos", value: profile.strongestCombinations[0]?.strength || 30 },
+                    ]} size={130} />
+                  </div>
+                </div>
+
+                {/* Col 2: Top architects (3.) + Top brands */}
+                <div className="col-span-4 space-y-5">
+                  {/* Style-to-Architect Mapping */}
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">
+                      <Users size={10} className="inline mr-1" />
+                      Architect Alignment
+                    </p>
+                    {profile.topArchitects.length === 0 ? (
+                      <p className="text-[9px] text-muted italic">No architects linked</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {profile.topArchitects.slice(0, 4).map((a) => (
+                          <div key={a.architectId} className="rounded-xl border border-border p-3">
+                            <div className="flex items-center justify-between mb-2">
+                              <p className="text-[11px] font-semibold">{a.architectName}</p>
+                              <ScoreRing score={a.alignment} size={30} strokeWidth={2.5} />
+                            </div>
+                            <div className="grid grid-cols-3 gap-1.5">
+                              <div className="text-center rounded-lg bg-surface/50 py-1">
+                                <p className="text-[7px] font-semibold uppercase text-muted">Align</p>
+                                <p className="text-[10px] font-bold">{a.alignment}%</p>
+                              </div>
+                              <div className="text-center rounded-lg bg-surface/50 py-1">
+                                <p className="text-[7px] font-semibold uppercase text-muted">Material</p>
+                                <p className="text-[10px] font-bold">{a.materialOverlap}%</p>
+                              </div>
+                              <div className="text-center rounded-lg bg-surface/50 py-1">
+                                <p className="text-[7px] font-semibold uppercase text-muted">Category</p>
+                                <p className="text-[10px] font-bold">{a.categoryStrength}%</p>
+                              </div>
+                            </div>
+                            <div className="mt-1.5 flex flex-wrap gap-1">
+                              {a.projectNames.slice(0, 2).map((pn) => (
+                                <span key={pn} className="rounded-full bg-surface px-1.5 py-0.5 text-[7px] font-medium text-muted">{pn}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Top brands */}
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">
+                      <Box size={10} className="inline mr-1" />
+                      Top Brands
+                    </p>
+                    <div className="space-y-1.5">
+                      {profile.topBrands.slice(0, 4).map((b) => (
+                        <div key={b.brandId} className="flex items-center justify-between rounded-lg bg-surface/30 px-3 py-2">
+                          <div>
+                            <p className="text-[10px] font-semibold">{b.brandName}</p>
+                            <p className="text-[8px] text-muted">{b.productCount} products</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <MatchBar score={b.score} height={4} />
+                            <span className="text-[9px] font-bold w-6">{b.score}%</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Col 3: Top products (4.) */}
+                <div className="col-span-5">
+                  <div className="flex items-center justify-between mb-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">
+                      <Sparkles size={10} className="inline mr-1" />
+                      Product Fit ({profile.topProducts.length})
+                    </p>
+                  </div>
+                  {profile.topProducts.length === 0 ? (
+                    <p className="text-[9px] text-muted italic">No products linked to this style</p>
+                  ) : (
+                    <div className="rounded-xl border border-border overflow-hidden">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="bg-surface/40">
+                            <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-left">Product</th>
+                            <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Fit</th>
+                            <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Trend</th>
+                            <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Projects</th>
+                            <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Architects</th>
+                            <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-right">Price</th>
+                            <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center" />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {profile.topProducts.slice(0, 8).map((sp, idx) => (
+                            <tr key={sp.product.id} className={`border-t border-border ${idx < 3 ? "bg-emerald-light/15" : "hover:bg-surface/20"}`}>
+                              <td className="px-2.5 py-2">
+                                <p className="text-[10px] font-semibold">{sp.product.name}</p>
+                                <p className="text-[8px] text-muted">{sp.product.brand} · {sp.product.category}</p>
+                              </td>
+                              <td className="px-2.5 py-2 text-center"><ScoreRing score={sp.fitScore} size={28} strokeWidth={2.5} /></td>
+                              <td className="px-2.5 py-2 text-center"><DimCell score={sp.trendAlign} /></td>
+                              <td className="px-2.5 py-2 text-center"><span className="text-[10px] font-bold">{sp.projectUsage}</span></td>
+                              <td className="px-2.5 py-2 text-center"><span className="text-[10px] font-bold">{sp.architectAdoption}</span></td>
+                              <td className="px-2.5 py-2 text-right"><span className="text-[10px] font-semibold">{sp.product.price}</span></td>
+                              <td className="px-2.5 py-2 text-center">
+                                <button onClick={() => { const n = new Set(shortlisted); if (n.has(sp.product.id)) n.delete(sp.product.id); else n.add(sp.product.id); setShortlisted(n); }}
+                                  className={`rounded p-1 transition-colors ${shortlisted.has(sp.product.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+                                  <Star size={9} />
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 2. Material Compatibility Engine */}
+      <div className="rounded-2xl border border-border bg-white p-6">
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground"><Gem size={16} className="text-white" /></div>
+            <div>
+              <h2 className="text-[14px] font-semibold">Material Compatibility Engine</h2>
+              <p className="text-[11px] text-muted">How materials work together — compatibility scores and pairing strength</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1 rounded-xl border border-border bg-white p-1">
+            {(["all", "premium", "practical"] as const).map((t) => (
+              <button key={t} onClick={() => setMatTier(t)}
+                className={`rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors ${matTier === t ? "bg-foreground text-white" : "text-muted hover:bg-surface"}`}>
+                {t === "all" ? "All Sets" : t === "premium" ? "Premium" : "Practical"}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          {filteredPairs.map((pair, i) => {
+            const color = pair.compatibility >= 80 ? "border-emerald/30 bg-emerald-light/15" : pair.compatibility >= 60 ? "border-border" : "border-amber/30 bg-amber-light/10";
+            const barColor = pair.compatibility >= 80 ? "bg-emerald" : pair.compatibility >= 60 ? "bg-foreground" : "bg-amber";
+            return (
+              <div key={i} className={`rounded-xl border ${color} p-3`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1 text-[11px] font-semibold">
+                      <span>{pair.matA}</span>
+                      <Link2 size={10} className="text-muted" />
+                      <span>{pair.matB}</span>
+                    </div>
+                    <span className={`rounded-full px-1.5 py-0.5 text-[7px] font-bold uppercase ${pair.tier === "premium" ? "bg-amber-light text-amber" : "bg-emerald-light text-emerald"}`}>
+                      {pair.tier}
+                    </span>
+                  </div>
+                  <span className="text-[12px] font-bold">{pair.compatibility}%</span>
+                </div>
+                <div className="h-[4px] bg-surface rounded-full overflow-hidden mb-1.5">
+                  <div className={`h-full rounded-full ${barColor}`} style={{ width: `${pair.compatibility}%` }} />
+                </div>
+                <p className="text-[9px] text-muted">{pair.label}</p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 5. Relationship Graph */}
+      <div className="rounded-2xl border border-border bg-white p-6">
+        <div className="flex items-center gap-3 mb-5">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground"><Hexagon size={16} className="text-white" /></div>
+          <div>
+            <h2 className="text-[14px] font-semibold">Style Intelligence Network</h2>
+            <p className="text-[11px] text-muted">Visual map connecting styles, materials, architects, brands, and products</p>
+          </div>
+          <div className="ml-auto flex items-center gap-2 text-[9px]">
+            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-foreground" /> Style</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald" /> Material</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-500" /> Architect</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-amber" /> Brand</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-full bg-rose" /> Product</span>
+          </div>
+        </div>
+
+        {(() => {
+          const w = 900;
+          const h = 500;
+          const cx = w / 2;
+          const cy = h / 2;
+
+          const typeConfig: Record<string, { color: string; radius: number; ring: number }> = {
+            style: { color: "#0a0a0a", radius: 18, ring: 0 },
+            material: { color: "#059669", radius: 12, ring: 120 },
+            architect: { color: "#3b82f6", radius: 10, ring: 170 },
+            brand: { color: "#d97706", radius: 10, ring: 200 },
+            product: { color: "#e11d48", radius: 7, ring: 230 },
+          };
+
+          const nodePositions: Record<string, { x: number; y: number }> = {};
+          const typeGroups: Record<string, typeof graphNodes> = { style: [], material: [], architect: [], brand: [], product: [] };
+          graphNodes.forEach((n) => { if (typeGroups[n.type]) typeGroups[n.type].push(n); });
+
+          Object.entries(typeGroups).forEach(([type, nodes]) => {
+            const cfg = typeConfig[type];
+            const ringR = cfg.ring;
+            nodes.forEach((n, i) => {
+              const angle = (2 * Math.PI * i) / Math.max(nodes.length, 1) - Math.PI / 2;
+              nodePositions[n.id] = { x: cx + ringR * Math.cos(angle), y: cy + ringR * Math.sin(angle) };
+            });
+          });
+
+          const maxEdgeWeight = Math.max(...graphEdges.map((e) => e.weight), 1);
+
+          return (
+            <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ maxHeight: 500 }}>
+              {/* Edges */}
+              {graphEdges.map((edge, i) => {
+                const from = nodePositions[edge.from];
+                const to = nodePositions[edge.to];
+                if (!from || !to) return null;
+                const norm = edge.weight / maxEdgeWeight;
+                const isHovered = graphHover === edge.from || graphHover === edge.to;
+                return (
+                  <line key={i} x1={from.x} y1={from.y} x2={to.x} y2={to.y}
+                    stroke="#0a0a0a" strokeWidth={0.5 + norm * 3}
+                    opacity={graphHover ? (isHovered ? 0.4 : 0.04) : 0.08 + norm * 0.15} />
+                );
+              })}
+              {/* Nodes */}
+              {graphNodes.map((node) => {
+                const pos = nodePositions[node.id];
+                if (!pos) return null;
+                const cfg = typeConfig[node.type];
+                const isHovered = graphHover === node.id;
+                const isConnected = graphHover ? graphEdges.some((e) => (e.from === graphHover && e.to === node.id) || (e.to === graphHover && e.from === node.id)) : false;
+                const opacity = graphHover ? (isHovered || isConnected ? 1 : 0.15) : 1;
+                return (
+                  <g key={node.id} onMouseEnter={() => setGraphHover(node.id)} onMouseLeave={() => setGraphHover(null)} className="cursor-pointer" opacity={opacity}>
+                    <circle cx={pos.x} cy={pos.y} r={cfg.radius + (isHovered ? 3 : 0)} fill={cfg.color} opacity={isHovered ? 1 : 0.85} />
+                    <text x={pos.x} y={pos.y + cfg.radius + 12} textAnchor="middle" fill="#737373" className="text-[7px] font-medium" style={{ pointerEvents: "none" }}>
+                      {node.label.length > 14 ? node.label.slice(0, 12) + "…" : node.label}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          );
+        })()}
+      </div>
+
+      {/* Style Profile Cards (3. + 4. summaries) */}
       <div className="rounded-2xl border border-border bg-white p-6">
         <div className="flex items-center gap-3 mb-5">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground"><Palette size={16} className="text-white" /></div>
           <div>
-            <h2 className="text-[14px] font-semibold">Style → Category Relationship Map</h2>
-            <p className="text-[11px] text-muted">Hover over style tags to see category connections</p>
+            <h2 className="text-[14px] font-semibold">Style Profiles — Quick View</h2>
+            <p className="text-[11px] text-muted">Click a card to expand full intelligence. Click the heatmap row above for the same style.</p>
           </div>
         </div>
-        <RelationshipMap styles={styleMaterial.styles} categories={styleMaterial.categories} matrix={styleMaterial.matrix} />
-      </div>
-
-      <div className="rounded-2xl border border-border bg-white p-6">
-        <h2 className="text-[14px] font-semibold mb-4">Style Profiles</h2>
         <div className="grid gap-4 lg:grid-cols-3">
-          {styleMaterial.styles.slice(0, 6).map((style) => {
-            const catEntries = styleMaterial.categories
-              .map((c) => ({ category: c, count: styleMaterial.matrix[style]?.[c] || 0 }))
-              .filter((e) => e.count > 0)
-              .sort((a, b) => b.count - a.count);
-            const total = catEntries.reduce((s, e) => s + e.count, 0);
-            if (total === 0) return null;
-
+          {styleProfiles.map((profile) => {
+            if (profile.totalUsage === 0) return null;
+            const isExpanded = expandedStyle === profile.style;
             return (
-              <div key={style} className="rounded-xl border border-border p-4">
+              <button key={profile.style} onClick={() => setExpandedStyle(isExpanded ? null : profile.style)}
+                className={`rounded-xl border text-left transition-all p-4 ${isExpanded ? "border-foreground ring-2 ring-foreground/10" : "border-border hover:border-foreground/30"}`}>
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-[13px] font-semibold">{style}</h3>
-                  <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-medium text-muted">{total} uses</span>
+                  <h3 className="text-[13px] font-semibold">{profile.style}</h3>
+                  <span className="rounded-full bg-surface px-2 py-0.5 text-[10px] font-medium text-muted">{profile.totalUsage} products</span>
                 </div>
-                <div className="space-y-2">
-                  {catEntries.map((e) => (
+
+                {/* Mini KPIs */}
+                <div className="grid grid-cols-4 gap-1 mb-3">
+                  <div className="text-center rounded-md bg-surface/50 py-1">
+                    <p className="text-[7px] font-semibold uppercase text-muted">Cats</p>
+                    <p className="text-[10px] font-bold">{profile.topCategories.length}</p>
+                  </div>
+                  <div className="text-center rounded-md bg-surface/50 py-1">
+                    <p className="text-[7px] font-semibold uppercase text-muted">Archs</p>
+                    <p className="text-[10px] font-bold">{profile.topArchitects.length}</p>
+                  </div>
+                  <div className="text-center rounded-md bg-surface/50 py-1">
+                    <p className="text-[7px] font-semibold uppercase text-muted">Brands</p>
+                    <p className="text-[10px] font-bold">{profile.topBrands.length}</p>
+                  </div>
+                  <div className="text-center rounded-md bg-surface/50 py-1">
+                    <p className="text-[7px] font-semibold uppercase text-muted">Combos</p>
+                    <p className="text-[10px] font-bold">{profile.strongestCombinations.length}</p>
+                  </div>
+                </div>
+
+                {/* Category bars */}
+                <div className="space-y-1.5">
+                  {profile.topCategories.slice(0, 3).map((e) => (
                     <div key={e.category} className="flex items-center gap-2">
-                      <span className="w-16 text-[10px] text-muted truncate">{e.category}</span>
-                      <MatchBar score={(e.count / catEntries[0].count) * 100} height={4} />
-                      <span className="text-[9px] font-bold text-muted w-4">{e.count}</span>
+                      <span className="w-14 text-[9px] text-muted truncate">{e.category}</span>
+                      <MatchBar score={profile.topCategories[0]?.count ? (e.count / profile.topCategories[0].count) * 100 : 0} height={4} />
+                      <span className="text-[8px] font-bold text-muted w-3">{e.count}</span>
                     </div>
                   ))}
                 </div>
-              </div>
+
+                {/* Top architect + brand chips */}
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {profile.topArchitects.slice(0, 1).map((a) => (
+                    <span key={a.architectId} className="rounded-full bg-blue-50 px-1.5 py-0.5 text-[7px] font-semibold text-blue-600">{a.architectName}</span>
+                  ))}
+                  {profile.topBrands.slice(0, 2).map((b) => (
+                    <span key={b.brandId} className="rounded-full bg-amber-light px-1.5 py-0.5 text-[7px] font-semibold text-amber">{b.brandName}</span>
+                  ))}
+                </div>
+              </button>
             );
           })}
         </div>
