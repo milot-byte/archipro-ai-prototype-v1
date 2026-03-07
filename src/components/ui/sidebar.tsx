@@ -5,24 +5,24 @@ import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
   LayoutDashboard,
-  FolderKanban,
-  Layers,
-  Heart,
-  Users,
-  FileText,
-  MessageSquare,
-  ClipboardList,
-  Activity,
   TrendingUp,
   Crown,
-  Network,
   BarChart3,
+  Package,
+  Users,
+  Building2,
+  FolderKanban,
+  Layers,
+  ClipboardList,
+  PenTool,
+  MessageSquare,
+  Mail,
+  FileText,
   Settings,
   Bell,
   Search,
   PanelLeftClose,
   PanelLeft,
-  PenTool,
   ChevronDown,
   LogOut,
   HelpCircle,
@@ -36,26 +36,31 @@ interface NavItem {
   badge?: string;
 }
 
-const mainNav: NavItem[] = [
-  { href: "/", label: "Home", icon: LayoutDashboard },
-  { href: "/discover", label: "My Projects", icon: FolderKanban, badge: "6" },
-  { href: "/boards", label: "Design Boards", icon: Layers, badge: "6" },
-  { href: "/products", label: "Saved Products", icon: Heart, badge: "12" },
-  { href: "/architects", label: "Saved Professionals", icon: Users },
-];
-
-const workflowNav: NavItem[] = [
-  { href: "/brief", label: "Brief Builder", icon: PenTool },
-  { href: "/specifications", label: "Specifications", icon: ClipboardList, badge: "3" },
-  { href: "/brands", label: "Enquiries & Inbox", icon: MessageSquare, badge: "4" },
-];
-
 const intelligenceNav: NavItem[] = [
-  { href: "/activity", label: "Activity Feed", icon: Activity },
+  { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/market-trends", label: "Market Trends", icon: BarChart3 },
   { href: "/momentum", label: "Product Momentum", icon: TrendingUp },
   { href: "/influence", label: "Architect Influence", icon: Crown },
-  { href: "/network", label: "Influence Network", icon: Network },
-  { href: "/dashboard", label: "Analytics", icon: BarChart3 },
+];
+
+const discoveryNav: NavItem[] = [
+  { href: "/products", label: "Products", icon: Package, badge: "12" },
+  { href: "/architects", label: "Architects", icon: Users },
+  { href: "/brands", label: "Brands", icon: Building2 },
+  { href: "/projects", label: "Projects", icon: FolderKanban },
+];
+
+const workspaceNav: NavItem[] = [
+  { href: "/my-projects", label: "My Projects", icon: Layers, badge: "6" },
+  { href: "/boards", label: "Design Boards", icon: Layers, badge: "6" },
+  { href: "/specifications", label: "Specifications", icon: ClipboardList, badge: "3" },
+  { href: "/brief", label: "Brief Builder", icon: PenTool },
+];
+
+const communicationNav: NavItem[] = [
+  { href: "/inbox", label: "Inbox", icon: Mail, badge: "2" },
+  { href: "/enquiries", label: "Enquiries", icon: MessageSquare, badge: "4" },
+  { href: "/quotes", label: "Quotes", icon: FileText, badge: "3" },
 ];
 
 function NavLink({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
@@ -174,22 +179,30 @@ export function Sidebar() {
 
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto px-2 py-2">
-        <div className="space-y-0.5">
-          {mainNav.map((item) => (
-            <NavLink key={item.href} item={item} collapsed={collapsed} />
-          ))}
-        </div>
-
-        <SectionLabel collapsed={collapsed}>Workflow</SectionLabel>
-        <div className="space-y-0.5">
-          {workflowNav.map((item) => (
-            <NavLink key={item.href} item={item} collapsed={collapsed} />
-          ))}
-        </div>
-
         <SectionLabel collapsed={collapsed}>Intelligence</SectionLabel>
         <div className="space-y-0.5">
           {intelligenceNav.map((item) => (
+            <NavLink key={item.href} item={item} collapsed={collapsed} />
+          ))}
+        </div>
+
+        <SectionLabel collapsed={collapsed}>Discovery</SectionLabel>
+        <div className="space-y-0.5">
+          {discoveryNav.map((item) => (
+            <NavLink key={item.href} item={item} collapsed={collapsed} />
+          ))}
+        </div>
+
+        <SectionLabel collapsed={collapsed}>Workspace</SectionLabel>
+        <div className="space-y-0.5">
+          {workspaceNav.map((item) => (
+            <NavLink key={item.href} item={item} collapsed={collapsed} />
+          ))}
+        </div>
+
+        <SectionLabel collapsed={collapsed}>Communication</SectionLabel>
+        <div className="space-y-0.5">
+          {communicationNav.map((item) => (
             <NavLink key={item.href} item={item} collapsed={collapsed} />
           ))}
         </div>
