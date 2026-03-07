@@ -16,6 +16,7 @@ const intelligenceLinks = [
   { href: "/influence", label: "Architect Influence" },
   { href: "/momentum", label: "Product Momentum" },
   { href: "/network", label: "Influence Network" },
+  { href: "/intelligence/cost", label: "Cost Intelligence" },
   { href: "/dashboard", label: "Analytics" },
 ];
 
