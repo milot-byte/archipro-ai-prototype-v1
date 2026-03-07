@@ -83,6 +83,17 @@ interface BriefArchitectMatch {
   influence: ArchitectInfluence | undefined;
   similarProjects: (typeof projects)[number][];
   styleOverlap: string[];
+  // ─── Granular score breakdown ───
+  styleAlignScore: number;      // 0-100
+  materialAlignScore: number;   // 0-100
+  projectTypeScore: number;     // 0-100
+  roomRelevanceScore: number;   // 0-100
+  precedentScore: number;       // 0-100
+  trendAlignScore: number;      // 0-100
+  monthlySparkline: number[];
+  categoryStrengths: { category: string; count: number; pct: number }[];
+  materialPreferences: string[];
+  archType: "boutique" | "established";
 }
 
 interface ProjectProductMatch {
@@ -282,49 +293,134 @@ function computeBriefProductMatches(brief: Brief): BriefProductMatch[] {
 }
 
 function computeBriefArchitectMatches(brief: Brief): BriefArchitectMatch[] {
+  const seed = (s: string) => {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    return Math.abs(h);
+  };
+
   return architects.map((arch) => {
-    let score = 0;
     const reasons: string[] = [];
     const influence = architectInfluenceData.find((a) => a.architectId === arch.id);
+    const archProjects = projects.filter((p) => p.architectId === arch.id);
 
+    // ── Style alignment ──
     const styleOverlap = arch.specialties.filter((s) =>
       [brief.style, brief.type, brief.location, ...brief.features].some(
         (f) => f.toLowerCase().includes(s.toLowerCase()) || s.toLowerCase().includes(f.toLowerCase())
       )
     );
-    if (styleOverlap.length > 0) {
-      score += styleOverlap.length * 15;
-      reasons.push(`Style match: ${styleOverlap.join(", ")}`);
-    }
+    const styleAlignBase = styleOverlap.length > 0 ? 50 + styleOverlap.length * 18 : 15;
+    const styleAlignScore = clamp(styleAlignBase + (seed(arch.id + brief.style) % 20), 0, 100);
+    if (styleOverlap.length > 0) reasons.push(`Style match: ${styleOverlap.join(", ")}`);
 
-    const archProjects = projects.filter((p) => p.architectId === arch.id);
+    // ── Material alignment ──
+    const archProductIds = [...new Set(archProjects.flatMap((p) => p.products))];
+    const archProducts = archProductIds.map((pid) => products.find((p) => p.id === pid)).filter(Boolean);
+    const archMaterials = [...new Set(archProducts.map((p) => p!.name.toLowerCase()))];
+    const matOverlap = brief.materials.filter((m) =>
+      archMaterials.some((am) => am.includes(m.toLowerCase()))
+    );
+    const materialAlignBase = matOverlap.length > 0 ? 45 + matOverlap.length * 20 : 20;
+    const materialAlignScore = clamp(materialAlignBase + (seed(arch.id + "mat") % 22), 0, 100);
+    if (matOverlap.length > 0) reasons.push(`Material affinity: ${matOverlap.join(", ")}`);
+
+    // ── Project type relevance ──
+    const typeMatches = archProjects.filter((p) =>
+      p.tags.some((t) => [brief.type, brief.style].some((bt) => bt.toLowerCase() === t.toLowerCase()))
+    );
+    const projectTypeBase = typeMatches.length > 0 ? 40 + typeMatches.length * 20 : 10;
+    const projectTypeScore = clamp(projectTypeBase + (seed(arch.id + "type") % 18), 0, 100);
+    if (typeMatches.length > 0) reasons.push(`${typeMatches.length} similar project type${typeMatches.length > 1 ? "s" : ""}`);
+
+    // ── Room relevance ──
+    // Check if architect has worked with products in categories matching brief rooms
+    const roomCategories: Record<string, string[]> = {
+      Kitchen: ["Hardware", "Kitchen", "Surfaces", "Lighting"],
+      "Living Room": ["Lighting", "Furniture", "Surfaces"],
+      Bathroom: ["Surfaces", "Hardware", "Lighting"],
+      "Outdoor Deck": ["Decking", "Outdoor"],
+      "Master Bedroom": ["Lighting", "Furniture", "Surfaces"],
+      "Home Office": ["Lighting", "Furniture"],
+      Bedroom: ["Lighting", "Furniture"],
+      "Garden Room": ["Furniture", "Lighting", "Surfaces"],
+      "Kitchen Nook": ["Kitchen", "Hardware"],
+      Pergola: ["Outdoor"],
+      Studio: ["Lighting", "Furniture"],
+    };
+    const neededCats = new Set<string>();
+    brief.rooms.forEach((r) => (roomCategories[r] || []).forEach((c) => neededCats.add(c)));
+    const archCats = new Set(archProducts.map((p) => p!.category));
+    const roomCatOverlap = [...neededCats].filter((c) => archCats.has(c));
+    const roomRelevanceBase = roomCatOverlap.length > 0 ? 30 + roomCatOverlap.length * 12 : 10;
+    const roomRelevanceScore = clamp(roomRelevanceBase + (seed(arch.id + "room") % 20), 0, 100);
+    if (roomCatOverlap.length > 0) reasons.push(`Products in ${roomCatOverlap.length} relevant categories`);
+
+    // ── Architect precedent ──
     const locationMatches = archProjects.filter((p) =>
       brief.location.toLowerCase().split(" ").some((l) => p.tags.some((t) => t.toLowerCase().includes(l)))
     );
-    if (locationMatches.length > 0) {
-      score += 15;
-      reasons.push(`${locationMatches.length} similar location project${locationMatches.length > 1 ? "s" : ""}`);
-    }
-
-    if (influence) {
-      score += Math.round(influence.influenceScore * 0.2);
-      reasons.push(`Influence score: ${influence.influenceScore}`);
-    }
-
-    score += Math.min(arch.projectCount * 2, 15);
+    const precedentBase = (locationMatches.length > 0 ? 30 : 0) + Math.min(arch.projectCount * 3, 30);
+    const precedentScore = clamp(precedentBase + (seed(arch.id + "prec") % 25), 0, 100);
+    if (locationMatches.length > 0) reasons.push(`${locationMatches.length} similar location project${locationMatches.length > 1 ? "s" : ""}`);
     reasons.push(`${arch.projectCount} projects completed`);
 
+    // ── Trend alignment ──
+    const trendBase = influence ? Math.round(influence.influenceScore * 0.7) : 25;
+    const trendAlignScore = clamp(trendBase + (seed(arch.id + "trend") % 20), 0, 100);
+    if (influence) reasons.push(`Influence score: ${influence.influenceScore}`);
+
+    // ── Composite score ──
+    const score = clamp(Math.round(
+      styleAlignScore * 0.22 +
+      materialAlignScore * 0.16 +
+      projectTypeScore * 0.18 +
+      roomRelevanceScore * 0.14 +
+      precedentScore * 0.15 +
+      trendAlignScore * 0.15
+    ), 0, 100);
+
+    // ── Monthly sparkline ──
+    const monthlySparkline = influence
+      ? influence.monthlyTrend.map((m) => m.score)
+      : Array.from({ length: 6 }, (_, i) => 40 + (seed(arch.id + `m${i}`) % 40));
+
+    // ── Similar projects ──
     const similarProjects = archProjects.filter((p) =>
       p.tags.some((t) => [brief.style, brief.type, ...brief.features].some((f) => f.toLowerCase() === t.toLowerCase()))
     );
 
+    // ── Category strengths ──
+    const catMap = new Map<string, number>();
+    archProducts.forEach((p) => catMap.set(p!.category, (catMap.get(p!.category) || 0) + 1));
+    const totalProds = archProducts.length || 1;
+    const categoryStrengths = [...catMap.entries()]
+      .map(([category, count]) => ({ category, count, pct: Math.round((count / totalProds) * 100) }))
+      .sort((a, b) => b.count - a.count);
+
+    // ── Material preferences ──
+    const materialPreferences = [...new Set(archProducts.map((p) => p!.category))];
+
+    // ── Arch type ──
+    const archType: "boutique" | "established" = arch.projectCount >= 10 ? "established" : "boutique";
+
     return {
       architect: arch,
-      score: clamp(score, 0, 100),
+      score,
       reasons,
       influence,
       similarProjects,
       styleOverlap,
+      styleAlignScore,
+      materialAlignScore,
+      projectTypeScore,
+      roomRelevanceScore,
+      precedentScore,
+      trendAlignScore,
+      monthlySparkline,
+      categoryStrengths,
+      materialPreferences,
+      archType,
     };
   }).sort((a, b) => b.score - a.score);
 }
@@ -1024,16 +1120,81 @@ function DimCell({ score }: { score: number }) {
 
 // ─── Section 2: Brief → Architect ─────────────────────────────────────────────
 
-function BriefToArchitectSection({ brief, selectedBrief, setSelectedBrief, matches, shortlistedArchitects, toggleShortlistArchitect }: {
+type ArchSortKey = "score" | "styleAlignScore" | "materialAlignScore" | "projectTypeScore" | "roomRelevanceScore" | "precedentScore" | "trendAlignScore" | "projectCount";
+
+function BriefToArchitectSection({ brief, selectedBrief, setSelectedBrief, matches, shortlistedArchitects, toggleShortlistArchitect, savedProducts, toggleSaveProduct }: {
   brief: Brief;
   selectedBrief: number;
   setSelectedBrief: (i: number) => void;
   matches: BriefArchitectMatch[];
   shortlistedArchitects: Set<string>;
   toggleShortlistArchitect: (id: string) => void;
+  savedProducts: Set<string>;
+  toggleSaveProduct: (id: string) => void;
 }) {
+  const [sortKey, setSortKey] = useState<ArchSortKey>("score");
+  const [sortAsc, setSortAsc] = useState(false);
+  const [typeFilter, setTypeFilter] = useState<"all" | "boutique" | "established">("all");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [contacted, setContacted] = useState<Set<string>>(new Set());
+  const [addedToBrief, setAddedToBrief] = useState<Set<string>>(new Set());
+
+  const handleSort = (key: ArchSortKey) => {
+    if (sortKey === key) setSortAsc(!sortAsc);
+    else { setSortKey(key); setSortAsc(false); }
+  };
+
+  const sorted = useMemo(() => {
+    const filtered = typeFilter === "all" ? matches : matches.filter((m) => m.archType === typeFilter);
+    return [...filtered].sort((a, b) => {
+      let av: number, bv: number;
+      if (sortKey === "projectCount") {
+        av = a.architect.projectCount;
+        bv = b.architect.projectCount;
+      } else {
+        av = a[sortKey];
+        bv = b[sortKey];
+      }
+      return sortAsc ? av - bv : bv - av;
+    });
+  }, [matches, sortKey, sortAsc, typeFilter]);
+
+  const toggleContact = (id: string) => {
+    const next = new Set(contacted);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setContacted(next);
+  };
+
+  const toggleBrief = (id: string) => {
+    const next = new Set(addedToBrief);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setAddedToBrief(next);
+  };
+
+  // Category average for benchmarking
+  const avgScores = useMemo(() => {
+    const n = matches.length || 1;
+    return {
+      score: Math.round(matches.reduce((s, m) => s + m.score, 0) / n),
+      style: Math.round(matches.reduce((s, m) => s + m.styleAlignScore, 0) / n),
+      material: Math.round(matches.reduce((s, m) => s + m.materialAlignScore, 0) / n),
+      type: Math.round(matches.reduce((s, m) => s + m.projectTypeScore, 0) / n),
+      room: Math.round(matches.reduce((s, m) => s + m.roomRelevanceScore, 0) / n),
+      precedent: Math.round(matches.reduce((s, m) => s + m.precedentScore, 0) / n),
+      trend: Math.round(matches.reduce((s, m) => s + m.trendAlignScore, 0) / n),
+    };
+  }, [matches]);
+
+  const ArchSortHeader = ({ label, field, className = "" }: { label: string; field: ArchSortKey; className?: string }) => (
+    <button onClick={() => handleSort(field)} className={`flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-[0.06em] text-muted hover:text-foreground transition-colors ${className}`}>
+      {label}
+      <ArrowUpDown size={8} className={sortKey === field ? "text-foreground" : "text-muted/40"} />
+    </button>
+  );
+
   return (
     <div className="space-y-6">
+      {/* Brief selector */}
       <div className="rounded-2xl border border-border bg-white p-5">
         <div className="flex items-center justify-between mb-3">
           <h2 className="text-[14px] font-semibold">Matching Architects for: {brief.title}</h2>
@@ -1051,84 +1212,325 @@ function BriefToArchitectSection({ brief, selectedBrief, setSelectedBrief, match
           <span>Location: <strong className="text-foreground">{brief.location}</strong></span>
           <span>·</span>
           <span>Type: <strong className="text-foreground">{brief.type}</strong></span>
+          <span>·</span>
+          <span>Rooms: <strong className="text-foreground">{brief.rooms.length}</strong></span>
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        {matches.map((match, i) => (
-          <div key={match.architect.id} className={`rounded-2xl border bg-white p-5 transition-all ${i < 2 ? "border-foreground ring-1 ring-foreground/5" : "border-border"}`}>
-            <div className="flex items-start gap-4">
-              <ScoreRing score={match.score} size={56} strokeWidth={4} label="match" />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-[15px] font-semibold">{match.architect.name}</h3>
-                  {i === 0 && <span className="rounded-full bg-emerald-light px-2 py-0.5 text-[9px] font-bold text-emerald">Top Match</span>}
-                </div>
-                <p className="text-[12px] text-muted">{match.architect.firm} · {match.architect.location}</p>
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {match.architect.specialties.map((s) => (
-                    <FitBadge key={s} label={s} active={match.styleOverlap.includes(s)} />
-                  ))}
-                </div>
-              </div>
-              <button
-                onClick={() => toggleShortlistArchitect(match.architect.id)}
-                className={`rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors ${shortlistedArchitects.has(match.architect.id) ? "bg-foreground text-white" : "border border-border text-muted hover:bg-surface"}`}
-              >
-                {shortlistedArchitects.has(match.architect.id) ? <><Check size={11} className="inline mr-1" />Shortlisted</> : <><Star size={11} className="inline mr-1" />Shortlist</>}
-              </button>
-            </div>
+      {/* Controls: type toggle + sort indicator */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1 rounded-xl border border-border bg-white p-1">
+          {([["all", "All Architects", null], ["boutique", "Boutique", Sparkles], ["established", "Established", Shield]] as const).map(([key, label, Icon]) => (
+            <button
+              key={key}
+              onClick={() => setTypeFilter(key)}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors ${typeFilter === key ? "bg-foreground text-white" : "text-muted hover:bg-surface"}`}
+            >
+              {Icon && <Icon size={12} />}
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-3 text-[10px] text-muted">
+          <span>{sorted.length} of {matches.length} architects</span>
+          <span>·</span>
+          <span>Sorted by <strong className="text-foreground">{sortKey === "score" ? "Overall" : sortKey.replace("Score", "").replace("Align", "")}</strong> {sortAsc ? "↑" : "↓"}</span>
+        </div>
+      </div>
 
-            <div className="mt-4 space-y-1.5">
-              {match.reasons.map((r, j) => (
-                <div key={j} className="flex items-center gap-2 text-[11px]">
-                  <ChevronRight size={10} className="text-muted shrink-0" />
-                  <span className="text-muted">{r}</span>
-                </div>
-              ))}
-            </div>
+      {/* Sortable architect recommendation table */}
+      <div className="rounded-2xl border border-border bg-white overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-border bg-surface/30">
+                <th className="p-3 text-left"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">#</span></th>
+                <th className="p-3 text-left"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Architect</span></th>
+                <th className="p-3"><ArchSortHeader label="Match" field="score" /></th>
+                <th className="p-3"><ArchSortHeader label="Style" field="styleAlignScore" /></th>
+                <th className="p-3"><ArchSortHeader label="Material" field="materialAlignScore" /></th>
+                <th className="p-3"><ArchSortHeader label="Type" field="projectTypeScore" /></th>
+                <th className="p-3"><ArchSortHeader label="Room" field="roomRelevanceScore" /></th>
+                <th className="p-3"><ArchSortHeader label="Precedent" field="precedentScore" /></th>
+                <th className="p-3"><ArchSortHeader label="Trend" field="trendAlignScore" /></th>
+                <th className="p-3 text-center"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Influence</span></th>
+                <th className="p-3"><ArchSortHeader label="Projects" field="projectCount" /></th>
+                <th className="p-3 text-center"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((match, i) => {
+                const isExpanded = expandedId === match.architect.id;
 
-            {match.similarProjects.length > 0 && (
-              <div className="mt-4 pt-3 border-t border-border">
-                <p className="text-[10px] font-semibold text-muted uppercase tracking-wider mb-2">Similar Projects</p>
-                <div className="space-y-1.5">
-                  {match.similarProjects.map((p) => (
-                    <div key={p.id} className="flex items-center justify-between rounded-lg bg-surface/50 px-3 py-2">
-                      <div>
-                        <p className="text-[12px] font-medium">{p.title}</p>
-                        <p className="text-[10px] text-muted">{p.location} · {p.year}</p>
-                      </div>
-                      <div className="flex gap-1">
-                        {p.tags.slice(0, 2).map((t) => (
-                          <span key={t} className="rounded-full bg-surface px-2 py-0.5 text-[9px] font-medium text-muted">{t}</span>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+                return (
+                  <React.Fragment key={match.architect.id}>
+                    <tr
+                      className={`border-b border-border transition-colors cursor-pointer ${i < 2 ? "bg-emerald-light/20" : "hover:bg-surface/30"} ${isExpanded ? "bg-surface/40" : ""}`}
+                      onClick={() => setExpandedId(isExpanded ? null : match.architect.id)}
+                    >
+                      <td className="p-3">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] font-bold text-muted w-4 text-center">{i + 1}</span>
+                          {match.archType === "boutique" && <Sparkles size={9} className="text-blue-500" />}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-2.5 min-w-[200px]">
+                          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-foreground text-[9px] font-bold text-white shrink-0">
+                            {match.architect.name.split(" ").map((n) => n[0]).join("")}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-[12px] font-semibold truncate">{match.architect.name}</p>
+                              {i === 0 && <span className="rounded-full bg-emerald-light px-1.5 py-0.5 text-[8px] font-bold text-emerald">Top</span>}
+                            </div>
+                            <p className="text-[10px] text-muted truncate">{match.architect.firm} · {match.architect.location}</p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="p-3 text-center">
+                        <ScoreRing score={match.score} size={36} strokeWidth={3} />
+                      </td>
+                      <td className="p-3 text-center"><DimCell score={match.styleAlignScore} /></td>
+                      <td className="p-3 text-center"><DimCell score={match.materialAlignScore} /></td>
+                      <td className="p-3 text-center"><DimCell score={match.projectTypeScore} /></td>
+                      <td className="p-3 text-center"><DimCell score={match.roomRelevanceScore} /></td>
+                      <td className="p-3 text-center"><DimCell score={match.precedentScore} /></td>
+                      <td className="p-3 text-center"><DimCell score={match.trendAlignScore} /></td>
+                      <td className="p-3 text-center">
+                        <Sparkline data={match.monthlySparkline} width={52} height={18} color={match.influence && match.influence.influenceScore >= 80 ? "#059669" : "#0a0a0a"} />
+                      </td>
+                      <td className="p-3 text-center">
+                        <span className="text-[11px] font-bold">{match.architect.projectCount}</span>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-1 justify-center" onClick={(e) => e.stopPropagation()}>
+                          <button
+                            onClick={() => toggleShortlistArchitect(match.architect.id)}
+                            title="Shortlist"
+                            className={`rounded-md p-1.5 transition-colors ${shortlistedArchitects.has(match.architect.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}
+                          >
+                            <Star size={11} />
+                          </button>
+                          <button
+                            onClick={() => toggleSaveProduct(match.architect.id)}
+                            title="Save"
+                            className={`rounded-md p-1.5 transition-colors ${savedProducts.has(match.architect.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}
+                          >
+                            <Bookmark size={11} />
+                          </button>
+                          <button
+                            onClick={() => toggleContact(match.architect.id)}
+                            title="Contact"
+                            className={`rounded-md p-1.5 transition-colors ${contacted.has(match.architect.id) ? "bg-emerald text-white" : "bg-surface text-muted hover:bg-emerald hover:text-white"}`}
+                          >
+                            <ArrowUpRight size={11} />
+                          </button>
+                          <button
+                            onClick={() => toggleBrief(match.architect.id)}
+                            title="Add to Brief"
+                            className={`rounded-md p-1.5 transition-colors ${addedToBrief.has(match.architect.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}
+                          >
+                            <FileText size={11} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
 
-            {match.influence && (
-              <div className="mt-4 pt-3 border-t border-border">
-                <div className="grid grid-cols-3 gap-3 text-center">
-                  <div>
-                    <p className="text-[16px] font-bold">{match.influence.metrics.productSaves}</p>
-                    <p className="text-[9px] text-muted">Product Saves</p>
-                  </div>
-                  <div>
-                    <p className="text-[16px] font-bold">{match.influence.metrics.specDownloads}</p>
-                    <p className="text-[9px] text-muted">Spec Downloads</p>
-                  </div>
-                  <div>
-                    <p className="text-[16px] font-bold">{match.influence.tier}</p>
-                    <p className="text-[9px] text-muted">Influence Tier</p>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-        ))}
+                    {/* Expanded detail panel */}
+                    {isExpanded && (
+                      <tr className="border-b border-border bg-surface/20">
+                        <td colSpan={12} className="p-0">
+                          <div className="px-5 py-5">
+                            <div className="grid grid-cols-12 gap-6">
+
+                              {/* Col 1: Radar + benchmark */}
+                              <div className="col-span-3">
+                                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-3">Compatibility Radar</p>
+                                <div className="flex justify-center">
+                                  <RadarChart scores={[
+                                    { label: "Style", value: match.styleAlignScore },
+                                    { label: "Material", value: match.materialAlignScore },
+                                    { label: "Type", value: match.projectTypeScore },
+                                    { label: "Room", value: match.roomRelevanceScore },
+                                    { label: "Precedent", value: match.precedentScore },
+                                    { label: "Trend", value: match.trendAlignScore },
+                                  ]} size={140} />
+                                </div>
+
+                                {/* Benchmark vs average */}
+                                <div className="mt-4 pt-3 border-t border-border">
+                                  <p className="text-[9px] font-semibold uppercase tracking-wider text-muted mb-2">vs Category Average</p>
+                                  <div className="space-y-1.5">
+                                    {([
+                                      ["Overall", match.score, avgScores.score],
+                                      ["Style", match.styleAlignScore, avgScores.style],
+                                      ["Material", match.materialAlignScore, avgScores.material],
+                                      ["Type", match.projectTypeScore, avgScores.type],
+                                      ["Room", match.roomRelevanceScore, avgScores.room],
+                                      ["Precedent", match.precedentScore, avgScores.precedent],
+                                      ["Trend", match.trendAlignScore, avgScores.trend],
+                                    ] as const).map(([label, val, avg]) => {
+                                      const diff = val - avg;
+                                      const diffColor = diff > 0 ? "text-emerald" : diff < 0 ? "text-rose" : "text-muted";
+                                      return (
+                                        <div key={label} className="flex items-center justify-between text-[9px]">
+                                          <span className="text-muted w-14">{label}</span>
+                                          <span className="font-bold w-6 text-right">{val}</span>
+                                          <span className="text-muted w-8 text-center">avg {avg}</span>
+                                          <span className={`font-bold w-8 text-right ${diffColor}`}>
+                                            {diff > 0 ? "+" : ""}{diff}
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Col 2: Score breakdown + match reasons + specialties */}
+                              <div className="col-span-4">
+                                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-3">Score Breakdown</p>
+                                <div className="space-y-2.5">
+                                  <DimensionBar label="Style" score={match.styleAlignScore} />
+                                  <DimensionBar label="Material" score={match.materialAlignScore} />
+                                  <DimensionBar label="Proj Type" score={match.projectTypeScore} />
+                                  <DimensionBar label="Room" score={match.roomRelevanceScore} />
+                                  <DimensionBar label="Precedent" score={match.precedentScore} />
+                                  <DimensionBar label="Trend" score={match.trendAlignScore} />
+                                </div>
+
+                                <div className="mt-4 pt-3 border-t border-border">
+                                  <p className="text-[10px] font-semibold text-muted mb-1.5">Specialties</p>
+                                  <div className="flex flex-wrap gap-1">
+                                    {match.architect.specialties.map((s) => (
+                                      <FitBadge key={s} label={s} active={match.styleOverlap.includes(s)} />
+                                    ))}
+                                  </div>
+                                </div>
+
+                                <div className="mt-3 pt-3 border-t border-border">
+                                  <p className="text-[10px] font-semibold text-muted mb-1.5">Match Reasons</p>
+                                  <div className="space-y-1">
+                                    {match.reasons.map((r, j) => (
+                                      <div key={j} className="flex items-center gap-1.5 text-[10px]">
+                                        <ChevronRight size={9} className="text-muted shrink-0" />
+                                        <span className="text-muted">{r}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Col 3: Similar projects + influenced products + category strengths */}
+                              <div className="col-span-5">
+                                {/* Similar projects */}
+                                {match.similarProjects.length > 0 && (
+                                  <div className="mb-4">
+                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Similar Completed Projects</p>
+                                    <div className="grid grid-cols-2 gap-2">
+                                      {match.similarProjects.slice(0, 4).map((p) => (
+                                        <div key={p.id} className="rounded-lg border border-border p-2.5 hover:border-foreground/20 transition-colors">
+                                          <p className="text-[11px] font-semibold truncate">{p.title}</p>
+                                          <p className="text-[9px] text-muted">{p.location} · {p.year}</p>
+                                          <div className="mt-1.5 flex flex-wrap gap-1">
+                                            {p.tags.slice(0, 3).map((t) => (
+                                              <span key={t} className={`rounded-full px-1.5 py-0.5 text-[7px] font-medium ${
+                                                [brief.style, brief.type, ...brief.features].some((f) => f.toLowerCase() === t.toLowerCase())
+                                                  ? "bg-emerald-light text-emerald"
+                                                  : "bg-surface text-muted"
+                                              }`}>{t}</span>
+                                            ))}
+                                          </div>
+                                          <p className="text-[8px] text-muted mt-1">{p.products.length} product{p.products.length !== 1 ? "s" : ""}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Influenced products */}
+                                {match.influence && match.influence.topInfluencedProducts.length > 0 && (
+                                  <div className="mb-4">
+                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Influenced Products</p>
+                                    <div className="rounded-xl border border-border overflow-hidden">
+                                      <table className="w-full">
+                                        <thead>
+                                          <tr className="bg-surface/50">
+                                            <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-left">Product</th>
+                                            <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-left">Brand</th>
+                                            <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-right">Influence</th>
+                                          </tr>
+                                        </thead>
+                                        <tbody>
+                                          {match.influence.topInfluencedProducts.map((ip) => (
+                                            <tr key={ip.productId} className="border-t border-border">
+                                              <td className="px-2.5 py-1.5 text-[10px] font-medium">{ip.productName}</td>
+                                              <td className="px-2.5 py-1.5 text-[10px] text-muted">{ip.brand}</td>
+                                              <td className="px-2.5 py-1.5 text-right">
+                                                <div className="flex items-center gap-1.5 justify-end">
+                                                  <div className="w-10 h-[3px] bg-surface rounded-full overflow-hidden">
+                                                    <div className="h-full rounded-full bg-foreground" style={{ width: `${ip.influence}%` }} />
+                                                  </div>
+                                                  <span className="text-[9px] font-bold">{ip.influence}</span>
+                                                </div>
+                                              </td>
+                                            </tr>
+                                          ))}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Category strengths */}
+                                {match.categoryStrengths.length > 0 && (
+                                  <div>
+                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Category Strengths</p>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {match.categoryStrengths.map((cs) => (
+                                        <div key={cs.category} className="rounded-lg border border-border px-2.5 py-1.5 text-center">
+                                          <p className="text-[13px] font-bold">{cs.count}</p>
+                                          <p className="text-[8px] text-muted">{cs.category}</p>
+                                          <p className="text-[7px] text-muted">{cs.pct}%</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Influence metrics row */}
+                                {match.influence && (
+                                  <div className="mt-4 pt-3 border-t border-border">
+                                    <div className="grid grid-cols-5 gap-2 text-center">
+                                      {[
+                                        { v: match.influence.metrics.productSaves, l: "Saves" },
+                                        { v: match.influence.metrics.specDownloads, l: "Spec DL" },
+                                        { v: match.influence.metrics.enquiriesGenerated, l: "Enquiries" },
+                                        { v: match.influence.metrics.boardsCreated, l: "Boards" },
+                                        { v: match.influence.tier, l: "Tier" },
+                                      ].map((m) => (
+                                        <div key={m.l}>
+                                          <p className="text-[13px] font-bold">{m.v}</p>
+                                          <p className="text-[8px] text-muted">{m.l}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
@@ -1783,6 +2185,8 @@ export default function MatchingPage() {
             matches={briefArchitectMatches}
             shortlistedArchitects={shortlistedArchitects}
             toggleShortlistArchitect={toggleShortlistArchitect}
+            savedProducts={savedProducts}
+            toggleSaveProduct={toggleSaveProduct}
           />
         )}
 
