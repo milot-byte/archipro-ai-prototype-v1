@@ -586,6 +586,246 @@ function computeSpecWorkflow(specId: string): SpecWorkflowData | null {
   };
 }
 
+// ─── Board Detail Workflow Data ──────────────────────────────────────────────
+
+interface BoardWorkflowData {
+  recommendedProducts: {
+    id: string;
+    name: string;
+    brand: string;
+    price: string;
+    category: string;
+    momentum: number;
+    reason: string;
+    fitScore: number;
+  }[];
+  similarProjects: {
+    id: string;
+    title: string;
+    architect: string;
+    location: string;
+    matchScore: number;
+    matchReason: string;
+    sharedProducts: number;
+    tags: string[];
+  }[];
+  recommendedArchitects: {
+    name: string;
+    architectId: string;
+    score: number;
+    tier: string;
+    fitScore: number;
+    reason: string;
+    productOverlap: number;
+  }[];
+  specReadiness: {
+    score: number;
+    productCount: number;
+    categoryCount: number;
+    hasMixedCategories: boolean;
+    missingCritical: string[];
+    estimatedCost: number;
+    recommendation: string;
+  };
+  boardGaps: {
+    category: string;
+    importance: "critical" | "recommended" | "optional";
+    reason: string;
+    suggestion: { id: string; name: string; brand: string; price: string; momentum: number } | null;
+  }[];
+  boardStats: {
+    totalValue: number;
+    avgMomentum: number;
+    brandCount: number;
+    surgingCount: number;
+    categoryBreakdown: { category: string; count: number; pct: number }[];
+  };
+}
+
+function computeBoardWorkflow(boardId: string): BoardWorkflowData | null {
+  const board = designBoards.find(b => b.id === boardId);
+  if (!board) return null;
+
+  const boardProducts = board.productIds.map(pid => products.find(p => p.id === pid)).filter(Boolean) as typeof products;
+  const project = board.projectId ? projects.find(p => p.id === board.projectId) : null;
+  const boardCategories = [...new Set(boardProducts.map(p => p.category))];
+  const boardBrands = [...new Set(boardProducts.map(p => p.brandId))];
+
+  // ── Board Stats ──
+  let totalValue = 0;
+  boardProducts.forEach(p => { totalValue += parsePrice(p.price); });
+  const momentumScores = boardProducts.map(p => productMomentumData.find(m => m.productId === p.id)?.momentumScore || 0);
+  const avgMomentum = momentumScores.length > 0 ? Math.round(momentumScores.reduce((s, v) => s + v, 0) / momentumScores.length) : 0;
+  const surgingCount = boardProducts.filter(p => productMomentumData.find(m => m.productId === p.id)?.trend === "surging").length;
+
+  const categoryBreakdown = boardCategories.map(cat => {
+    const count = boardProducts.filter(p => p.category === cat).length;
+    return { category: cat, count, pct: Math.round((count / boardProducts.length) * 100) };
+  }).sort((a, b) => b.count - a.count);
+
+  // ── Recommended Products ──
+  const notOnBoard = products.filter(p => !board.productIds.includes(p.id));
+  const recommendedProducts = notOnBoard.map(p => {
+    const m = productMomentumData.find(pm => pm.productId === p.id);
+    const momentum = m?.momentumScore || 0;
+    let fitScore = 0;
+    let reason = "";
+
+    // Same brand affinity
+    if (boardBrands.includes(p.brandId)) { fitScore += 20; reason = `Same brand family (${p.brand})`; }
+    // Category complement
+    if (!boardCategories.includes(p.category)) { fitScore += 25; reason = reason || `Adds ${p.category} category to board`; }
+    // High momentum
+    if (momentum >= 80) { fitScore += 25; reason = reason || `Surging product (score ${momentum})`; }
+    else if (momentum >= 60) fitScore += 15;
+    // Used in same project
+    if (project && project.products.includes(p.id)) { fitScore += 20; reason = reason || `Tagged in ${project.title}`; }
+    // Used by same architect on other boards
+    const archBoards = designBoards.filter(b => b.owner.name === board.owner.name && b.id !== board.id);
+    if (archBoards.some(b => b.productIds.includes(p.id))) { fitScore += 15; reason = reason || `On ${board.owner.name}'s other boards`; }
+    // Style match from project tags
+    if (project) {
+      const projTags = project.tags.map(t => t.toLowerCase());
+      if (projTags.includes("coastal") && ["Decking", "Outdoor"].includes(p.category)) fitScore += 10;
+      if (projTags.includes("luxury") && parsePrice(p.price) > 1000) fitScore += 10;
+      if (projTags.includes("heritage") && ["Surfaces", "Furniture"].includes(p.category)) fitScore += 10;
+    }
+
+    if (!reason) reason = `Complements existing selection`;
+
+    return { id: p.id, name: p.name, brand: p.brand, price: p.price, category: p.category, momentum, reason, fitScore };
+  }).sort((a, b) => b.fitScore - a.fitScore).slice(0, 6);
+
+  // ── Similar Projects ──
+  const similarProjects = projects.filter(p => p.id !== board.projectId).map(proj => {
+    // Count shared products
+    const sharedProducts = proj.products.filter(pid => board.productIds.includes(pid)).length;
+    // Tag overlap
+    const projTags = proj.tags.map(t => t.toLowerCase());
+    const boardTags = project ? project.tags.map(t => t.toLowerCase()) : [];
+    const tagOverlap = boardTags.filter(t => projTags.includes(t)).length;
+    // Category overlap
+    const projProducts = products.filter(p => proj.products.includes(p.id));
+    const projCategories = [...new Set(projProducts.map(p => p.category))];
+    const catOverlap = boardCategories.filter(c => projCategories.includes(c)).length;
+
+    const matchScore = sharedProducts * 25 + tagOverlap * 15 + catOverlap * 10;
+    const reasons = [];
+    if (sharedProducts > 0) reasons.push(`${sharedProducts} shared product${sharedProducts > 1 ? "s" : ""}`);
+    if (tagOverlap > 0) reasons.push(`${tagOverlap} matching style tag${tagOverlap > 1 ? "s" : ""}`);
+    if (catOverlap > 0) reasons.push(`${catOverlap} overlapping categor${catOverlap > 1 ? "ies" : "y"}`);
+
+    return {
+      id: proj.id,
+      title: proj.title,
+      architect: proj.architect,
+      location: proj.location,
+      matchScore,
+      matchReason: reasons.join(", ") || "Similar project scope",
+      sharedProducts,
+      tags: proj.tags,
+    };
+  }).filter(p => p.matchScore > 0).sort((a, b) => b.matchScore - a.matchScore).slice(0, 4);
+
+  // ── Recommended Architects ──
+  const recommendedArchitects = architectInfluenceData.map(arch => {
+    const archObj = architects.find(a => a.id === arch.architectId);
+    // Count how many board products this architect has influenced
+    const influencedProducts = arch.topInfluencedProducts.filter(ip => board.productIds.includes(ip.productId));
+    const productOverlap = influencedProducts.length;
+
+    let fitScore = 0;
+    let reason = "";
+    if (productOverlap > 0) { fitScore += productOverlap * 20; reason = `Influences ${productOverlap} board product${productOverlap > 1 ? "s" : ""}`; }
+    fitScore += arch.influenceScore * 0.3;
+
+    // Style matching
+    if (project && archObj) {
+      const projTags = project.tags.map(t => t.toLowerCase());
+      const archSpecialties = archObj.specialties.map(s => s.toLowerCase());
+      const styleMatch = projTags.filter(t => archSpecialties.includes(t)).length;
+      if (styleMatch > 0) {
+        fitScore += styleMatch * 12;
+        if (!reason) reason = `Specializes in ${archObj.specialties.filter(s => projTags.includes(s.toLowerCase())).join(", ")}`;
+      }
+    }
+
+    if (!reason) reason = `${arch.tier} tier, ${arch.influenceScore} influence`;
+
+    return {
+      name: arch.name,
+      architectId: arch.architectId,
+      score: arch.influenceScore,
+      tier: arch.tier,
+      fitScore: Math.round(Math.min(fitScore, 100)),
+      reason,
+      productOverlap,
+    };
+  }).sort((a, b) => b.fitScore - a.fitScore).slice(0, 4);
+
+  // ── Spec Readiness ──
+  const hasMixedCategories = boardCategories.length >= 2;
+  const allCategories = ["Hardware", "Kitchen", "Surfaces", "Lighting", "Furniture", "Roofing", "Decking", "Outdoor"];
+  // What critical categories for a spec are missing from the board
+  const criticalForSpec = ["Lighting", "Surfaces", "Hardware"];
+  const missingCritical = criticalForSpec.filter(c => !boardCategories.includes(c));
+
+  let specScore = 0;
+  specScore += Math.min(boardProducts.length * 15, 40); // product count (max 40)
+  specScore += hasMixedCategories ? 20 : 0; // category diversity
+  specScore += Math.max(0, 25 - missingCritical.length * 10); // critical categories
+  specScore += board.productIds.every(pid => products.find(p => p.id === pid)?.specSheet) ? 15 : 5; // spec sheets available
+  specScore = Math.min(specScore, 100);
+
+  let recommendation = "";
+  if (specScore >= 80) recommendation = "Board is ready to convert to specification. All major categories covered.";
+  else if (specScore >= 60) recommendation = `Consider adding ${missingCritical.join(" and ")} products before converting.`;
+  else if (specScore >= 40) recommendation = `Board needs more products. Currently missing ${missingCritical.join(", ")}.`;
+  else recommendation = "Board is still early stage. Add more products across categories before converting.";
+
+  // ── Board Gaps ──
+  const gapCategories = allCategories.filter(c => !boardCategories.includes(c));
+  const boardGaps = gapCategories.map(category => {
+    const isCritical = criticalForSpec.includes(category);
+    const importance = isCritical ? "critical" as const : ["Kitchen", "Furniture"].includes(category) ? "recommended" as const : "optional" as const;
+    const candidates = products.filter(p => p.category === category);
+    const withMomentum = candidates.map(p => {
+      const m = productMomentumData.find(pm => pm.productId === p.id);
+      return { id: p.id, name: p.name, brand: p.brand, price: p.price, momentum: m?.momentumScore || 0 };
+    }).sort((a, b) => b.momentum - a.momentum);
+
+    return {
+      category,
+      importance,
+      reason: isCritical ? `${category} is essential for a complete specification` : `${category} products would enhance the board`,
+      suggestion: withMomentum[0] || null,
+    };
+  });
+
+  return {
+    recommendedProducts,
+    similarProjects,
+    recommendedArchitects,
+    specReadiness: {
+      score: specScore,
+      productCount: boardProducts.length,
+      categoryCount: boardCategories.length,
+      hasMixedCategories,
+      missingCritical,
+      estimatedCost: totalValue,
+      recommendation,
+    },
+    boardGaps,
+    boardStats: {
+      totalValue,
+      avgMomentum,
+      brandCount: boardBrands.length,
+      surgingCount,
+      categoryBreakdown,
+    },
+  };
+}
+
 // ─── Insight Generation ─────────────────────────────────────────────────────
 
 function generateInsights(context: PageContext, entityId?: string): Insight[] {
@@ -993,8 +1233,92 @@ function generateInsights(context: PageContext, entityId?: string): Insight[] {
       ];
     }
 
+    case "board-detail": {
+      const boardWorkflow = entityId ? computeBoardWorkflow(entityId) : null;
+      const board = entityId ? designBoards.find(b => b.id === entityId) : null;
+      if (!boardWorkflow || !board) return [];
+
+      const ins: Insight[] = [];
+
+      // Spec readiness
+      ins.push({
+        id: "bd-spec", type: boardWorkflow.specReadiness.score >= 80 ? "recommendation" : boardWorkflow.specReadiness.score >= 50 ? "action" : "warning",
+        icon: boardWorkflow.specReadiness.score >= 80 ? CheckCircle2 : boardWorkflow.specReadiness.score >= 50 ? ClipboardList : AlertTriangle,
+        title: `Spec readiness: ${boardWorkflow.specReadiness.score}%`,
+        description: boardWorkflow.specReadiness.recommendation,
+        metric: `${boardWorkflow.specReadiness.score}%`, metricLabel: "ready to convert",
+        confidence: 88,
+        actions: boardWorkflow.specReadiness.score >= 60 ? [{ label: "Convert to spec", href: "/specifications" }] : [],
+        tags: boardWorkflow.specReadiness.score >= 80 ? ["Ready"] : boardWorkflow.specReadiness.missingCritical.length > 0 ? ["Missing Categories"] : [],
+      });
+
+      // Board gaps
+      const criticalGaps = boardWorkflow.boardGaps.filter(g => g.importance === "critical");
+      if (criticalGaps.length > 0) {
+        ins.push({
+          id: "bd-gaps", type: "warning", icon: Grid3X3,
+          title: `${criticalGaps.length} critical categor${criticalGaps.length > 1 ? "ies" : "y"} missing`,
+          description: criticalGaps.map(g => `${g.category}${g.suggestion ? ` — try ${g.suggestion.name}` : ""}`).join(". "),
+          confidence: 82,
+          actions: [{ label: "Browse products", href: "/products" }],
+          tags: ["Gaps"],
+        });
+      }
+
+      // Top recommended product
+      if (boardWorkflow.recommendedProducts.length > 0) {
+        const top = boardWorkflow.recommendedProducts[0];
+        ins.push({
+          id: "bd-rec", type: "recommendation", icon: Package,
+          title: `Recommended: ${top.name}`,
+          description: `${top.reason}. Fit score ${top.fitScore}%. ${top.price}.`,
+          metric: `${top.fitScore}%`, metricLabel: "fit score",
+          confidence: top.fitScore,
+          actions: [{ label: "View product", href: `/products/${top.id}` }],
+          tags: ["AI Suggestion"],
+        });
+      }
+
+      // Similar projects
+      if (boardWorkflow.similarProjects.length > 0) {
+        const topProj = boardWorkflow.similarProjects[0];
+        ins.push({
+          id: "bd-proj", type: "opportunity", icon: FolderKanban,
+          title: `Similar project: ${topProj.title}`,
+          description: `${topProj.matchReason}. By ${topProj.architect} in ${topProj.location}.`,
+          confidence: Math.min(90, topProj.matchScore),
+          actions: [{ label: "View project", href: `/projects/${topProj.id}` }],
+        });
+      }
+
+      // Recommended architect
+      const topArch = boardWorkflow.recommendedArchitects[0];
+      if (topArch && topArch.fitScore >= 40) {
+        ins.push({
+          id: "bd-arch", type: "recommendation", icon: Users,
+          title: `${topArch.name} — best architect match`,
+          description: `${topArch.reason}. ${topArch.tier} tier, influence score ${topArch.score}.`,
+          metric: `${topArch.fitScore}%`, metricLabel: "fit",
+          confidence: topArch.fitScore,
+          tags: [topArch.tier],
+        });
+      }
+
+      // Surging products on board
+      if (boardWorkflow.boardStats.surgingCount > 0) {
+        ins.push({
+          id: "bd-surge", type: "opportunity", icon: TrendingUp,
+          title: `${boardWorkflow.boardStats.surgingCount} surging product${boardWorkflow.boardStats.surgingCount > 1 ? "s" : ""} on board`,
+          description: `Average momentum score ${boardWorkflow.boardStats.avgMomentum}. These products are gaining strong traction — good selections.`,
+          confidence: 85,
+          tags: ["Surging"],
+        });
+      }
+
+      return ins;
+    }
+
     case "boards":
-    case "board-detail":
       return [
         {
           id: "b-1", type: "action", icon: Layers,
@@ -1445,6 +1769,241 @@ function MissingCategoriesPanel({ categories }: { categories: ProjectWorkflowDat
   );
 }
 
+// ─── Board Workflow Panels ──────────────────────────────────────────────────
+
+function SpecReadinessPanel({ data }: { data: BoardWorkflowData["specReadiness"] }) {
+  const circumference = 2 * Math.PI * 28;
+  const filled = (data.score / 100) * circumference;
+  const color = data.score >= 80 ? "#10b981" : data.score >= 50 ? "#f59e0b" : "#f43f5e";
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-3.5">
+      <div className="flex items-center gap-2 mb-3">
+        <ClipboardList size={12} className="text-muted" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Spec Readiness</span>
+      </div>
+      <div className="flex items-center gap-4 mb-3">
+        <div className="relative shrink-0">
+          <svg width="68" height="68" viewBox="0 0 68 68">
+            <circle cx="34" cy="34" r="28" fill="none" stroke="#e5e5e5" strokeWidth="4" />
+            <circle cx="34" cy="34" r="28" fill="none" stroke={color} strokeWidth="4"
+              strokeDasharray={circumference} strokeDashoffset={circumference - filled}
+              strokeLinecap="round" transform="rotate(-90 34 34)" />
+            <text x="34" y="32" textAnchor="middle" className="text-[14px] font-bold" fill="#0a0a0a">{data.score}%</text>
+            <text x="34" y="44" textAnchor="middle" className="text-[8px]" fill="#737373">ready</text>
+          </svg>
+        </div>
+        <div className="flex-1 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-muted">Products</span>
+            <span className="text-[10px] font-semibold">{data.productCount}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-muted">Categories</span>
+            <span className="text-[10px] font-semibold">{data.categoryCount}</span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] text-muted">Est. Value</span>
+            <span className="text-[10px] font-semibold">${data.estimatedCost.toLocaleString()}</span>
+          </div>
+        </div>
+      </div>
+      <p className="text-[10px] text-muted leading-relaxed">{data.recommendation}</p>
+      {data.missingCritical.length > 0 && (
+        <div className="mt-2 flex items-center gap-1 flex-wrap">
+          <span className="text-[9px] text-rose font-semibold">Missing:</span>
+          {data.missingCritical.map(c => (
+            <span key={c} className="rounded px-1.5 py-0.5 text-[8px] font-semibold bg-rose-light text-rose">{c}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BoardRecommendedProductsPanel({ products: recommended }: { products: BoardWorkflowData["recommendedProducts"] }) {
+  if (recommended.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-3.5">
+      <div className="flex items-center gap-2 mb-3">
+        <Package size={12} className="text-muted" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Recommended Products</span>
+      </div>
+      <div className="space-y-1.5">
+        {recommended.slice(0, 5).map(p => (
+          <Link key={p.id} href={`/products/${p.id}`}
+            className="flex items-center gap-3 rounded-lg border border-border p-2 hover:bg-surface/50 transition-colors">
+            <div className="h-8 w-8 rounded bg-surface flex items-center justify-center shrink-0">
+              <Package size={12} className="text-muted" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] font-semibold truncate">{p.name}</p>
+              <p className="text-[8px] text-muted">{p.brand} · {p.category} · {p.price}</p>
+              <p className="text-[8px] text-emerald">{p.reason}</p>
+            </div>
+            <div className="text-right shrink-0">
+              <span className="text-[10px] font-bold">{p.fitScore}%</span>
+              {p.momentum > 0 && (
+                <div className="flex items-center gap-0.5 mt-0.5 justify-end">
+                  <TrendingUp size={7} className="text-emerald" />
+                  <span className="text-[8px] text-emerald font-semibold">{p.momentum}</span>
+                </div>
+              )}
+            </div>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SimilarProjectsPanel({ projects: similar }: { projects: BoardWorkflowData["similarProjects"] }) {
+  if (similar.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-3.5">
+      <div className="flex items-center gap-2 mb-3">
+        <FolderKanban size={12} className="text-muted" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Similar Projects</span>
+      </div>
+      <div className="space-y-2">
+        {similar.map(p => (
+          <Link key={p.id} href={`/projects/${p.id}`}
+            className="block rounded-lg border border-border p-2.5 hover:bg-surface/50 transition-colors">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-semibold">{p.title}</span>
+              <span className="text-[9px] font-bold text-emerald">{p.matchScore}%</span>
+            </div>
+            <p className="text-[9px] text-muted">{p.architect} · {p.location}</p>
+            <p className="text-[8px] text-emerald mt-0.5">{p.matchReason}</p>
+            <div className="flex items-center gap-1 mt-1.5">
+              {p.tags.map(tag => (
+                <span key={tag} className="rounded px-1.5 py-0.5 text-[7px] font-medium bg-surface text-muted">{tag}</span>
+              ))}
+            </div>
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RecommendedArchitectsPanel({ architects: recs }: { architects: BoardWorkflowData["recommendedArchitects"] }) {
+  if (recs.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-3.5">
+      <div className="flex items-center gap-2 mb-3">
+        <Users size={12} className="text-muted" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Recommended Architects</span>
+      </div>
+      <div className="space-y-2">
+        {recs.map(a => (
+          <Link key={a.architectId} href={`/architects/${a.architectId}`}
+            className="block rounded-lg border border-border p-2.5 hover:bg-surface/50 transition-colors">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-semibold">{a.name}</span>
+              <div className="flex items-center gap-1.5">
+                <span className="rounded px-1 py-0.5 text-[8px] font-semibold bg-surface text-muted">{a.tier}</span>
+                <span className="text-[10px] font-bold">{a.fitScore}%</span>
+              </div>
+            </div>
+            <p className="text-[9px] text-muted">{a.reason}</p>
+            {a.productOverlap > 0 && (
+              <p className="text-[8px] text-emerald mt-0.5">{a.productOverlap} product influence overlap{a.productOverlap > 1 ? "s" : ""}</p>
+            )}
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BoardGapsPanel({ gaps }: { gaps: BoardWorkflowData["boardGaps"] }) {
+  if (gaps.length === 0) return null;
+  const importanceColor = { critical: "text-rose", recommended: "text-amber", optional: "text-muted" };
+  const importanceBg = { critical: "bg-rose-light", recommended: "bg-amber-light", optional: "bg-surface" };
+
+  return (
+    <div className="rounded-xl border border-border bg-white p-3.5">
+      <div className="flex items-center gap-2 mb-3">
+        <Grid3X3 size={12} className="text-muted" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Board Gaps</span>
+        <span className="ml-auto text-[10px] font-semibold text-rose">{gaps.filter(g => g.importance === "critical").length} critical</span>
+      </div>
+      <div className="space-y-2">
+        {gaps.map(g => (
+          <div key={g.category} className="rounded-lg border border-border p-2">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-semibold">{g.category}</span>
+              <span className={`rounded px-1.5 py-0.5 text-[8px] font-semibold ${importanceBg[g.importance]} ${importanceColor[g.importance]}`}>
+                {g.importance}
+              </span>
+            </div>
+            {g.suggestion && (
+              <Link href={`/products/${g.suggestion.id}`} className="flex items-center justify-between mt-1 hover:bg-surface/50 rounded p-0.5 transition-colors">
+                <span className="text-[9px] text-muted">Try: {g.suggestion.name}</span>
+                <div className="flex items-center gap-1">
+                  <span className="text-[8px] text-muted">{g.suggestion.price}</span>
+                  {g.suggestion.momentum > 0 && (
+                    <span className="flex items-center gap-0.5 text-[8px] text-emerald font-semibold">
+                      <TrendingUp size={7} />{g.suggestion.momentum}
+                    </span>
+                  )}
+                </div>
+              </Link>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BoardStatsPanel({ stats }: { stats: BoardWorkflowData["boardStats"] }) {
+  return (
+    <div className="rounded-xl border border-border bg-white p-3.5">
+      <div className="flex items-center gap-2 mb-3">
+        <BarChart3 size={12} className="text-muted" />
+        <span className="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">Board Analytics</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <div className="rounded-lg bg-surface p-2">
+          <p className="text-[13px] font-bold">${stats.totalValue.toLocaleString()}</p>
+          <p className="text-[8px] text-muted">Total Value</p>
+        </div>
+        <div className="rounded-lg bg-surface p-2">
+          <p className="text-[13px] font-bold">{stats.avgMomentum}</p>
+          <p className="text-[8px] text-muted">Avg Momentum</p>
+        </div>
+        <div className="rounded-lg bg-surface p-2">
+          <p className="text-[13px] font-bold">{stats.brandCount}</p>
+          <p className="text-[8px] text-muted">Brands</p>
+        </div>
+        <div className="rounded-lg bg-surface p-2">
+          <p className="text-[13px] font-bold text-emerald">{stats.surgingCount}</p>
+          <p className="text-[8px] text-muted">Surging</p>
+        </div>
+      </div>
+      <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted mb-1.5">Categories</p>
+      <div className="space-y-1.5">
+        {stats.categoryBreakdown.map(c => (
+          <div key={c.category} className="flex items-center justify-between">
+            <span className="text-[10px] font-medium">{c.category}</span>
+            <div className="flex items-center gap-2">
+              <div className="w-16 h-1.5 rounded-full bg-surface overflow-hidden">
+                <div className="h-full bg-foreground/50 rounded-full" style={{ width: `${c.pct}%` }} />
+              </div>
+              <span className="text-[9px] text-muted w-6 text-right">{c.count}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── Spec Workflow Panels ───────────────────────────────────────────────────
 
 function ApprovalReadinessPanel({ data }: { data: SpecWorkflowData["approvalReadiness"] }) {
@@ -1680,11 +2239,16 @@ export function AICopilot() {
     context === "spec-detail" && entityId ? computeSpecWorkflow(entityId) : null,
     [context, entityId]
   );
+  const boardWorkflow = useMemo(() =>
+    context === "board-detail" && entityId ? computeBoardWorkflow(entityId) : null,
+    [context, entityId]
+  );
 
   // Reset panel when context changes
   useEffect(() => {
     if (context === "project-detail") setActivePanel("overview");
     else if (context === "spec-detail") setActivePanel("overview");
+    else if (context === "board-detail") setActivePanel("overview");
     else setActivePanel("insights");
   }, [context, entityId]);
 
@@ -1710,6 +2274,14 @@ export function AICopilot() {
         { icon: DollarSign, label: "Budget", value: `$${(specWorkflow.budgetImpact.totalEstimate / 1000).toFixed(1)}k`, sub: `${specWorkflow.budgetImpact.byRoom.length} rooms` },
         { icon: AlertCircle, label: "Gaps", value: `${specWorkflow.missingItems.length}`, sub: `${specWorkflow.substitutes.length} subs` },
         { icon: Truck, label: "Lead Time", value: specWorkflow.leadTimeWarnings.length > 0 ? `${specWorkflow.leadTimeWarnings[0].estimatedWeeks}w` : "OK", sub: `${specWorkflow.leadTimeWarnings.filter(w => w.severity === "high").length} critical` },
+      ];
+    }
+    if (context === "board-detail" && boardWorkflow) {
+      return [
+        { icon: ClipboardList, label: "Spec Ready", value: `${boardWorkflow.specReadiness.score}%`, sub: `${boardWorkflow.specReadiness.productCount} products` },
+        { icon: DollarSign, label: "Value", value: `$${(boardWorkflow.boardStats.totalValue / 1000).toFixed(1)}k`, sub: `${boardWorkflow.boardStats.brandCount} brands` },
+        { icon: TrendingUp, label: "Momentum", value: `${boardWorkflow.boardStats.avgMomentum}`, sub: `${boardWorkflow.boardStats.surgingCount} surging` },
+        { icon: Grid3X3, label: "Gaps", value: `${boardWorkflow.boardGaps.filter(g => g.importance === "critical").length}`, sub: `${boardWorkflow.boardGaps.length} total` },
       ];
     }
     switch (context) {
@@ -1754,6 +2326,12 @@ export function AICopilot() {
     { key: "overview", label: "Overview" },
     { key: "supply", label: "Supply" },
     { key: "budget", label: "Budget" },
+    { key: "insights", label: "Insights" },
+  ];
+  const boardPanelTabs = [
+    { key: "overview", label: "Overview" },
+    { key: "products", label: "Products" },
+    { key: "discover", label: "Discover" },
     { key: "insights", label: "Insights" },
   ];
 
@@ -1812,10 +2390,10 @@ export function AICopilot() {
       </div>
 
       {/* Panel Tabs (for detail pages) */}
-      {((context === "project-detail" && projectWorkflow) || (context === "spec-detail" && specWorkflow)) && (
+      {((context === "project-detail" && projectWorkflow) || (context === "spec-detail" && specWorkflow) || (context === "board-detail" && boardWorkflow)) && (
         <div className="shrink-0 px-4 pt-2 pb-0 border-b border-border">
           <div className="flex items-center gap-0">
-            {(context === "project-detail" ? projectPanelTabs : specPanelTabs).map(tab => (
+            {(context === "project-detail" ? projectPanelTabs : context === "spec-detail" ? specPanelTabs : boardPanelTabs).map(tab => (
               <button key={tab.key} onClick={() => setActivePanel(tab.key)}
                 className={`relative px-3 py-2 text-[10px] font-semibold transition-colors ${
                   activePanel === tab.key ? "text-foreground" : "text-muted hover:text-foreground"
@@ -1895,6 +2473,30 @@ export function AICopilot() {
           </div>
         )}
 
+        {/* ── Board Detail: Overview Panel ── */}
+        {context === "board-detail" && boardWorkflow && activePanel === "overview" && (
+          <div className="space-y-3">
+            <SpecReadinessPanel data={boardWorkflow.specReadiness} />
+            <BoardStatsPanel stats={boardWorkflow.boardStats} />
+            <BoardGapsPanel gaps={boardWorkflow.boardGaps} />
+          </div>
+        )}
+
+        {/* ── Board Detail: Products Panel ── */}
+        {context === "board-detail" && boardWorkflow && activePanel === "products" && (
+          <div className="space-y-3">
+            <BoardRecommendedProductsPanel products={boardWorkflow.recommendedProducts} />
+          </div>
+        )}
+
+        {/* ── Board Detail: Discover Panel ── */}
+        {context === "board-detail" && boardWorkflow && activePanel === "discover" && (
+          <div className="space-y-3">
+            <SimilarProjectsPanel projects={boardWorkflow.similarProjects} />
+            <RecommendedArchitectsPanel architects={boardWorkflow.recommendedArchitects} />
+          </div>
+        )}
+
         {/* ── Spec Detail: Overview Panel ── */}
         {context === "spec-detail" && specWorkflow && activePanel === "overview" && (
           <div className="space-y-3">
@@ -1959,7 +2561,7 @@ export function AICopilot() {
         )}
 
         {/* ── Insights Panel (default or insights tab) ── */}
-        {(activePanel === "insights" || !((context === "project-detail" && projectWorkflow) || (context === "spec-detail" && specWorkflow))) && (
+        {(activePanel === "insights" || !((context === "project-detail" && projectWorkflow) || (context === "spec-detail" && specWorkflow) || (context === "board-detail" && boardWorkflow))) && (
           <div>
             <div className="flex items-center justify-between mb-3">
               <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted">
