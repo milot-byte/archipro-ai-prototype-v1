@@ -54,6 +54,11 @@ import {
   Hexagon,
   Gem,
   Wrench,
+  Gauge,
+  SlidersHorizontal,
+  GitBranch,
+  Activity,
+  Scale,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -212,6 +217,44 @@ interface RecommendationSignal {
   weight: number;
   description: string;
   factors: string[];
+}
+
+interface ProductScoreBreakdown {
+  product: Product;
+  finalScore: number;
+  confidence: number;
+  signals: {
+    name: string;
+    weight: number;
+    rawScore: number;
+    normalizedScore: number;
+    contribution: number;
+    confidence: number;
+  }[];
+  logicType: { rules: number; pattern: number; trend: number };
+  strongestSignals: string[];
+  weakestSignals: string[];
+  explanation: string;
+  alternatives: { productId: string; productName: string; score: number }[];
+  categoryAvg: number;
+  weeklyConfidence: number[];
+}
+
+interface ScoringProfile {
+  styleFitW: number;
+  materialFitW: number;
+  trendW: number;
+  architectW: number;
+  budgetSensitivity: number;
+  categoryW: number;
+  coOccurrenceW: number;
+  brandW: number;
+}
+
+interface RecommendationIntel {
+  signals: RecommendationSignal[];
+  breakdowns: ProductScoreBreakdown[];
+  defaultProfile: ScoringProfile;
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -1049,15 +1092,72 @@ function computeStyleMaterialMatrix(): StyleMaterialIntel {
   return { styles, categories, matrix, materialPairs, styleProfiles, graphNodes, graphEdges };
 }
 
-function computeRecommendationLogic(): RecommendationSignal[] {
-  return [
-    { name: "Architect Influence", weight: 25, description: "How strongly an architect's usage patterns influence product recommendations", factors: ["Product saves", "Spec downloads", "Board additions", "Enquiries generated"] },
-    { name: "Product Momentum", weight: 20, description: "Current trending strength and growth trajectory of products", factors: ["View growth rate", "Save velocity", "Board additions", "Spec inclusions"] },
-    { name: "Category Fit", weight: 20, description: "Whether the product fills a missing category gap in the brief or project", factors: ["Room requirements", "Missing categories", "Category coverage"] },
-    { name: "Style Alignment", weight: 15, description: "How well the product matches the stated style preferences and materials", factors: ["Style tag overlap", "Material keywords", "Design language"] },
-    { name: "Co-occurrence", weight: 10, description: "Products frequently used together in projects, boards, and specifications", factors: ["Project co-usage", "Board co-existence", "Spec room pairings"] },
-    { name: "Brand Affinity", weight: 10, description: "Whether the brand is already used or preferred by the architect", factors: ["Existing brand usage", "Brand influence score", "Supplier relationship"] },
+function computeRecommendationLogic(): RecommendationIntel {
+  const seed = (s: string) => { let h = 0; for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0; return Math.abs(h); };
+
+  const signals: RecommendationSignal[] = [
+    { name: "Style Fit", weight: 18, description: "How well the product matches stated style preferences and design language", factors: ["Style tag overlap", "Material keywords", "Design language", "Palette alignment"] },
+    { name: "Material Fit", weight: 16, description: "Material compatibility with existing project selections and specification requirements", factors: ["Material type match", "Finish consistency", "Texture harmony", "Durability class"] },
+    { name: "Room Relevance", weight: 14, description: "Whether the product is appropriate for the detected rooms in the project", factors: ["Room type mapping", "Category-room affinity", "Specification gaps"] },
+    { name: "Category Fit", weight: 14, description: "Whether the product fills a missing or under-covered category gap", factors: ["Missing categories", "Category coverage %", "Room requirements"] },
+    { name: "Trend Alignment", weight: 12, description: "Current momentum signals — trending products get boosted", factors: ["View growth rate", "Save velocity", "Board additions", "Momentum score"] },
+    { name: "Architect Precedent", weight: 12, description: "Whether the architect has used this product or brand in prior projects", factors: ["Prior project usage", "Brand preference", "Spec history"] },
+    { name: "Co-occurrence", weight: 8, description: "Products frequently used together in projects, boards, and specs", factors: ["Project co-usage", "Board co-existence", "Spec room pairings"] },
+    { name: "Brand Affinity", weight: 6, description: "Whether the brand is already present or preferred in the project", factors: ["Existing brand usage", "Brand influence score", "Supplier relationship"] },
   ];
+
+  const defaultProfile: ScoringProfile = {
+    styleFitW: 18, materialFitW: 16, trendW: 12, architectW: 12,
+    budgetSensitivity: 50, categoryW: 14, coOccurrenceW: 8, brandW: 6,
+  };
+
+  // Generate per-product breakdowns
+  const breakdowns: ProductScoreBreakdown[] = products.map((product) => {
+    const signalScores = signals.map((sig) => {
+      const rawScore = clamp(30 + seed(product.id + sig.name + "raw") % 65, 0, 100);
+      const normalizedScore = clamp(Math.round(rawScore * (0.7 + (seed(product.id + sig.name + "norm") % 30) / 100)), 0, 100);
+      const contribution = Math.round((normalizedScore * sig.weight) / 100);
+      const confidence = clamp(50 + seed(product.id + sig.name + "conf") % 45, 0, 100);
+      return { name: sig.name, weight: sig.weight, rawScore, normalizedScore, contribution, confidence };
+    });
+
+    const finalScore = clamp(signalScores.reduce((sum, s) => sum + s.contribution, 0), 0, 100);
+    const confidence = clamp(Math.round(signalScores.reduce((sum, s) => sum + s.confidence, 0) / signalScores.length), 0, 100);
+
+    const sorted = [...signalScores].sort((a, b) => b.contribution - a.contribution);
+    const strongestSignals = sorted.slice(0, 3).map((s) => s.name);
+    const weakestSignals = sorted.slice(-2).map((s) => s.name);
+
+    // Logic type breakdown
+    const rulesContrib = signalScores.filter((s) => ["Category Fit", "Room Relevance", "Brand Affinity"].includes(s.name)).reduce((sum, s) => sum + s.contribution, 0);
+    const patternContrib = signalScores.filter((s) => ["Architect Precedent", "Co-occurrence", "Style Fit"].includes(s.name)).reduce((sum, s) => sum + s.contribution, 0);
+    const trendContrib = signalScores.filter((s) => ["Trend Alignment", "Material Fit"].includes(s.name)).reduce((sum, s) => sum + s.contribution, 0);
+    const totalContrib = Math.max(rulesContrib + patternContrib + trendContrib, 1);
+    const logicType = {
+      rules: Math.round((rulesContrib / totalContrib) * 100),
+      pattern: Math.round((patternContrib / totalContrib) * 100),
+      trend: Math.round((trendContrib / totalContrib) * 100),
+    };
+
+    const explanation = `${product.name} scored ${finalScore}% driven primarily by ${strongestSignals[0]} (${sorted[0].contribution}pts) and ${strongestSignals[1]} (${sorted[1].contribution}pts). ${weakestSignals[0]} contributed least. Confidence: ${confidence}%.`;
+
+    // Alternatives
+    const alternatives = products
+      .filter((p) => p.category === product.category && p.id !== product.id)
+      .slice(0, 3)
+      .map((p) => ({ productId: p.id, productName: p.name, score: clamp(25 + seed(p.id + "alt") % 65, 0, 100) }));
+
+    // Category average
+    const catProducts = products.filter((p) => p.category === product.category);
+    const categoryAvg = Math.round(catProducts.reduce((sum, p) => sum + clamp(30 + seed(p.id + "cavg") % 55, 0, 100), 0) / Math.max(catProducts.length, 1));
+
+    // Weekly confidence timeline
+    const weeklyConfidence = Array.from({ length: 8 }, (_, i) => clamp(confidence - 15 + seed(product.id + `wc${i}`) % 30, 30, 100));
+
+    return { product, finalScore, confidence, signals: signalScores, logicType, strongestSignals, weakestSignals, explanation, alternatives, categoryAvg, weeklyConfidence };
+  }).sort((a, b) => b.finalScore - a.finalScore);
+
+  return { signals, breakdowns, defaultProfile };
 }
 
 // ─── Tab Config ───────────────────────────────────────────────────────────────
@@ -3415,75 +3515,574 @@ function StyleMaterialSection({ styleMaterial }: { styleMaterial: StyleMaterialI
 
 // ─── Section 6: Recommendation Logic ──────────────────────────────────────────
 
-function RecommendationLogicSection({ signals }: { signals: RecommendationSignal[] }) {
+function RecommendationLogicSection({ intel }: { intel: RecommendationIntel }) {
+  const { signals, breakdowns, defaultProfile } = intel;
+  const [expandedProduct, setExpandedProduct] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<"finalScore" | "confidence">("finalScore");
+  const [sortAsc, setSortAsc] = useState(false);
+  const [savedProfile, setSavedProfile] = useState(false);
+  const [appliedToBoard, setAppliedToBoard] = useState(false);
+  const [appliedToBrief, setAppliedToBrief] = useState(false);
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareIds, setCompareIds] = useState<string[]>([]);
+
+  // 6. Sensitivity controls
+  const [profile, setProfile] = useState<ScoringProfile>({ ...defaultProfile });
+  const updateWeight = (key: keyof ScoringProfile, value: number) => {
+    setProfile((prev) => ({ ...prev, [key]: value }));
+  };
+
+  // Recompute scores with adjusted weights
+  const adjustedBreakdowns = useMemo(() => {
+    const weightMap: Record<string, keyof ScoringProfile> = {
+      "Style Fit": "styleFitW", "Material Fit": "materialFitW", "Trend Alignment": "trendW",
+      "Architect Precedent": "architectW", "Category Fit": "categoryW",
+      "Co-occurrence": "coOccurrenceW", "Brand Affinity": "brandW",
+      "Room Relevance": "categoryW",
+    };
+    return breakdowns.map((bd) => {
+      const adjusted = bd.signals.map((s) => {
+        const wKey = weightMap[s.name];
+        const adjW = wKey ? profile[wKey] : s.weight;
+        return { ...s, weight: adjW, contribution: Math.round((s.normalizedScore * adjW) / 100) };
+      });
+      const adjFinal = clamp(adjusted.reduce((sum, s) => sum + s.contribution, 0), 0, 100);
+      return { ...bd, signals: adjusted, finalScore: adjFinal };
+    }).sort((a, b) => {
+      const av = sortKey === "finalScore" ? a.finalScore : a.confidence;
+      const bv = sortKey === "finalScore" ? b.finalScore : b.confidence;
+      return sortAsc ? av - bv : bv - av;
+    });
+  }, [breakdowns, profile, sortKey, sortAsc]);
+
+  const handleSort = (key: "finalScore" | "confidence") => {
+    if (sortKey === key) setSortAsc(!sortAsc);
+    else { setSortKey(key); setSortAsc(false); }
+  };
+
+  const toggleCompare = (id: string) => {
+    setCompareIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : prev.length < 2 ? [...prev, id] : prev);
+  };
+
+  const isProfileModified = Object.keys(defaultProfile).some((k) => profile[k as keyof ScoringProfile] !== defaultProfile[k as keyof ScoringProfile]);
+
   return (
     <div className="space-y-6">
+
+      {/* Header + Data Sources */}
       <div className="rounded-2xl border border-border bg-white p-6">
-        <div className="flex items-center gap-3 mb-6">
+        <div className="flex items-center gap-3 mb-5">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-foreground"><Brain size={18} className="text-white" /></div>
           <div>
-            <h2 className="text-[16px] font-semibold">AI Recommendation Logic</h2>
-            <p className="text-[12px] text-muted">How the matching engine scores and ranks products</p>
+            <h2 className="text-[16px] font-semibold">AI Recommendation Logic & Transparency</h2>
+            <p className="text-[12px] text-muted">Full scoring breakdown, signal weights, sensitivity controls, and explainability</p>
           </div>
         </div>
+        <div className="grid grid-cols-4 gap-4">
+          {[
+            { label: "Projects", count: projects.length, icon: Layers },
+            { label: "Products", count: products.length, icon: Box },
+            { label: "Architects", count: architects.length, icon: Users },
+            { label: "Specifications", count: specifications.length, icon: Shield },
+          ].map((ds) => (
+            <div key={ds.label} className="rounded-xl bg-surface/50 p-3 text-center">
+              <ds.icon size={16} className="mx-auto text-muted mb-1" />
+              <p className="text-[16px] font-bold">{ds.count}</p>
+              <p className="text-[9px] text-muted">{ds.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
 
-        <div className="mb-8">
-          <h3 className="text-[12px] font-semibold mb-4">Signal Weights</h3>
-          <div className="space-y-3">
+      {/* 1. Signal Breakdown + 5. Rule vs Pattern vs Trend */}
+      <div className="grid grid-cols-12 gap-4">
+        {/* Signal weights */}
+        <div className="col-span-7 rounded-2xl border border-border bg-white p-5">
+          <h3 className="text-[13px] font-semibold mb-4">
+            <Activity size={12} className="inline mr-1.5" />
+            Signal Weight Distribution
+          </h3>
+          <div className="space-y-2.5">
             {signals.map((signal, i) => {
-              const colors = ["#0a0a0a", "#404040", "#525252", "#737373", "#a3a3a3", "#d4d4d4"];
-              return <WeightBar key={signal.name} weight={signal.weight} label={signal.name} color={colors[i]} />;
+              const colors = ["#0a0a0a", "#1a1a1a", "#333", "#4a4a4a", "#666", "#888", "#aaa", "#ccc"];
+              return (
+                <div key={signal.name}>
+                  <WeightBar weight={signal.weight} label={signal.name} color={colors[i % colors.length]} />
+                  <p className="ml-[132px] text-[8px] text-muted mt-0.5">{signal.description}</p>
+                </div>
+              );
             })}
           </div>
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-2">
-          {signals.map((signal) => (
-            <div key={signal.name} className="rounded-xl border border-border p-4">
-              <div className="flex items-center justify-between mb-2">
-                <h4 className="text-[13px] font-semibold">{signal.name}</h4>
-                <span className="rounded-full bg-foreground px-2.5 py-0.5 text-[10px] font-bold text-white">{signal.weight}%</span>
-              </div>
-              <p className="text-[11px] text-muted mb-3">{signal.description}</p>
-              <div className="space-y-1">
-                {signal.factors.map((f) => (
-                  <div key={f} className="flex items-center gap-2 text-[10px]">
-                    <CircleDot size={8} className="text-muted shrink-0" />
-                    <span className="text-muted">{f}</span>
+        {/* Logic type breakdown */}
+        <div className="col-span-5 space-y-4">
+          <div className="rounded-2xl border border-border bg-white p-5">
+            <h3 className="text-[13px] font-semibold mb-3">
+              <GitBranch size={12} className="inline mr-1.5" />
+              Logic Composition (avg)
+            </h3>
+            {(() => {
+              const avgRules = Math.round(adjustedBreakdowns.reduce((s, b) => s + b.logicType.rules, 0) / Math.max(adjustedBreakdowns.length, 1));
+              const avgPattern = Math.round(adjustedBreakdowns.reduce((s, b) => s + b.logicType.pattern, 0) / Math.max(adjustedBreakdowns.length, 1));
+              const avgTrend = Math.round(adjustedBreakdowns.reduce((s, b) => s + b.logicType.trend, 0) / Math.max(adjustedBreakdowns.length, 1));
+              return (
+                <div className="space-y-3">
+                  {[
+                    { label: "Rules-Based", value: avgRules, desc: "Category fit, room relevance, brand affinity", color: "bg-foreground" },
+                    { label: "Pattern Intelligence", value: avgPattern, desc: "Architect precedent, co-occurrence, style fit", color: "bg-blue-500" },
+                    { label: "Trend Intelligence", value: avgTrend, desc: "Momentum signals, material fit", color: "bg-emerald" },
+                  ].map((lt) => (
+                    <div key={lt.label}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="text-[10px] font-semibold">{lt.label}</span>
+                        <span className="text-[10px] font-bold">{lt.value}%</span>
+                      </div>
+                      <div className="h-[6px] bg-surface rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${lt.color}`} style={{ width: `${lt.value}%` }} />
+                      </div>
+                      <p className="text-[8px] text-muted mt-0.5">{lt.desc}</p>
+                    </div>
+                  ))}
+                  {/* Stacked bar */}
+                  <div className="mt-2 h-6 rounded-lg overflow-hidden flex">
+                    <div className="bg-foreground flex items-center justify-center" style={{ width: `${avgRules}%` }}>
+                      <span className="text-[7px] font-bold text-white">Rules</span>
+                    </div>
+                    <div className="bg-blue-500 flex items-center justify-center" style={{ width: `${avgPattern}%` }}>
+                      <span className="text-[7px] font-bold text-white">Pattern</span>
+                    </div>
+                    <div className="bg-emerald flex items-center justify-center" style={{ width: `${avgTrend}%` }}>
+                      <span className="text-[7px] font-bold text-white">Trend</span>
+                    </div>
                   </div>
-                ))}
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* Transparency note */}
+          <div className="rounded-2xl border border-border bg-white p-5">
+            <div className="flex items-start gap-2.5">
+              <Eye size={14} className="text-muted shrink-0 mt-0.5" />
+              <div>
+                <p className="text-[11px] font-semibold">Transparency Note</p>
+                <p className="text-[9px] text-muted mt-0.5">All match scores are computed from observable platform signals — architect saves, spec downloads, project tagging, and board additions. No black-box ML models. Scores update in real-time.</p>
               </div>
             </div>
-          ))}
+          </div>
+        </div>
+      </div>
+
+      {/* 6. Sensitivity Controls */}
+      <div className="rounded-2xl border border-border bg-white p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground"><SlidersHorizontal size={14} className="text-white" /></div>
+            <div>
+              <h3 className="text-[13px] font-semibold">Sensitivity Controls</h3>
+              <p className="text-[10px] text-muted">Adjust signal weights to simulate how recommendations change</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {isProfileModified && (
+              <button onClick={() => setProfile({ ...defaultProfile })} className="rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">
+                Reset to Default
+              </button>
+            )}
+            {/* 7. Action Layer */}
+            <button onClick={() => setSavedProfile(!savedProfile)}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors ${savedProfile ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+              <Bookmark size={10} /> {savedProfile ? "Profile Saved" : "Save Profile"}
+            </button>
+            <button onClick={() => setAppliedToBoard(!appliedToBoard)}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors ${appliedToBoard ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+              <Plus size={10} /> {appliedToBoard ? "Applied" : "Apply to Board"}
+            </button>
+            <button onClick={() => setAppliedToBrief(!appliedToBrief)}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors ${appliedToBrief ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+              <FileText size={10} /> {appliedToBrief ? "Applied" : "Apply to Brief"}
+            </button>
+            <button onClick={() => { setCompareMode(!compareMode); setCompareIds([]); }}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors ${compareMode ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+              <Scale size={10} /> {compareMode ? "Exit Compare" : "Compare Profiles"}
+            </button>
+          </div>
         </div>
 
-        <div className="mt-8 pt-6 border-t border-border">
-          <h3 className="text-[12px] font-semibold mb-4">Data Sources</h3>
-          <div className="grid grid-cols-4 gap-4">
-            {[
-              { label: "Projects", count: projects.length, icon: Layers },
-              { label: "Products", count: products.length, icon: Box },
-              { label: "Architects", count: architects.length, icon: Users },
-              { label: "Specifications", count: specifications.length, icon: Shield },
-            ].map((ds) => (
-              <div key={ds.label} className="rounded-xl bg-surface/50 p-4 text-center">
-                <ds.icon size={18} className="mx-auto text-muted mb-2" />
-                <p className="text-[18px] font-bold">{ds.count}</p>
-                <p className="text-[10px] text-muted">{ds.label}</p>
+        <div className="grid grid-cols-4 gap-4">
+          {([
+            { key: "styleFitW" as const, label: "Style Importance", icon: Palette },
+            { key: "materialFitW" as const, label: "Material Importance", icon: Gem },
+            { key: "trendW" as const, label: "Trend Importance", icon: TrendingUp },
+            { key: "architectW" as const, label: "Architect Precedence", icon: Users },
+            { key: "categoryW" as const, label: "Category Fit", icon: Layers },
+            { key: "coOccurrenceW" as const, label: "Co-occurrence", icon: Link2 },
+            { key: "brandW" as const, label: "Brand Affinity", icon: Box },
+            { key: "budgetSensitivity" as const, label: "Budget Sensitivity", icon: Wallet },
+          ]).map(({ key, label, icon: Icon }) => {
+            const val = profile[key];
+            const defaultVal = defaultProfile[key];
+            const isModified = val !== defaultVal;
+            return (
+              <div key={key} className={`rounded-xl border p-3 ${isModified ? "border-foreground/30 bg-surface/30" : "border-border"}`}>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Icon size={10} className="text-muted" />
+                  <span className="text-[9px] font-semibold uppercase tracking-wider text-muted">{label}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <input type="range" min={0} max={30} value={val} onChange={(e) => updateWeight(key, Number(e.target.value))}
+                    className="flex-1 h-1.5 accent-foreground cursor-pointer" />
+                  <span className={`text-[11px] font-bold w-6 text-right ${isModified ? "text-foreground" : "text-muted"}`}>{val}</span>
+                </div>
+                {isModified && (
+                  <p className="text-[7px] text-muted mt-1">Default: {defaultVal}</p>
+                )}
               </div>
-            ))}
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Compare mode panel */}
+      {compareMode && compareIds.length === 2 && (() => {
+        const bdA = adjustedBreakdowns.find((b) => b.product.id === compareIds[0]);
+        const bdB = adjustedBreakdowns.find((b) => b.product.id === compareIds[1]);
+        if (!bdA || !bdB) return null;
+        return (
+          <div className="rounded-2xl border border-foreground/20 ring-2 ring-foreground/5 bg-white p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <Scale size={14} className="text-foreground" />
+              <h3 className="text-[13px] font-semibold">Profile Comparison</h3>
+            </div>
+            <div className="grid grid-cols-2 gap-6">
+              {[bdA, bdB].map((bd) => (
+                <div key={bd.product.id}>
+                  <div className="flex items-center gap-2 mb-3">
+                    <ScoreRing score={bd.finalScore} size={36} strokeWidth={3} />
+                    <div>
+                      <p className="text-[12px] font-semibold">{bd.product.name}</p>
+                      <p className="text-[9px] text-muted">{bd.product.brand} · {bd.product.category}</p>
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    {bd.signals.map((s) => (
+                      <div key={s.name} className="flex items-center gap-2">
+                        <span className="w-20 text-[8px] text-muted truncate">{s.name}</span>
+                        <div className="flex-1 h-[4px] bg-surface rounded-full overflow-hidden">
+                          <div className="h-full rounded-full bg-foreground" style={{ width: `${s.normalizedScore}%` }} />
+                        </div>
+                        <span className="text-[8px] font-bold w-5 text-right">{s.contribution}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {/* Difference summary */}
+            <div className="mt-4 pt-3 border-t border-border">
+              <div className="flex items-center justify-center gap-6 text-[10px]">
+                <span className="font-semibold">{bdA.product.name}: <span className="text-[14px] font-bold">{bdA.finalScore}%</span></span>
+                <span className="text-muted">vs</span>
+                <span className="font-semibold">{bdB.product.name}: <span className="text-[14px] font-bold">{bdB.finalScore}%</span></span>
+                <span className={`font-bold ${bdA.finalScore > bdB.finalScore ? "text-emerald" : bdA.finalScore < bdB.finalScore ? "text-rose" : "text-muted"}`}>
+                  Δ{Math.abs(bdA.finalScore - bdB.finalScore)}pts
+                </span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
+      {compareMode && compareIds.length < 2 && (
+        <div className="rounded-xl border border-dashed border-foreground/30 bg-surface/20 p-4 text-center text-[11px] text-muted">
+          <Scale size={14} className="mx-auto mb-1" />
+          Select {2 - compareIds.length} more product{compareIds.length === 0 ? "s" : ""} below to compare scoring profiles
+        </div>
+      )}
+
+      {/* 2. Weighted Scoring Table + 3. Waterfall + 8. Expandable Detail */}
+      <div className="rounded-2xl border border-border bg-white overflow-hidden">
+        <div className="p-5 border-b border-border">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-[13px] font-semibold">Product Scoring Breakdown</h3>
+              <p className="text-[10px] text-muted mt-0.5">Click a row to expand full explanation, alternatives, and confidence timeline</p>
+            </div>
+            <div className="flex items-center gap-2 text-[10px] text-muted">
+              <span>{adjustedBreakdowns.length} products scored</span>
+              {isProfileModified && <span className="rounded-full bg-amber-light px-2 py-0.5 text-[8px] font-bold text-amber">Custom Weights</span>}
+            </div>
           </div>
         </div>
 
-        <div className="mt-6 rounded-xl bg-surface/50 p-4 flex items-start gap-3">
-          <Eye size={16} className="text-muted shrink-0 mt-0.5" />
-          <div>
-            <p className="text-[12px] font-semibold">Transparency Note</p>
-            <p className="text-[11px] text-muted mt-0.5">
-              All match scores are computed from observable platform signals — architect saves, spec downloads, project tagging,
-              and board additions. No black-box ML models are used. Scores update in real-time as new signals arrive.
-            </p>
-          </div>
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-border bg-surface/30">
+                {compareMode && <th className="p-2 w-8" />}
+                <th className="p-3 text-left"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">#</span></th>
+                <th className="p-3 text-left"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Product</span></th>
+                {signals.map((s) => (
+                  <th key={s.name} className="p-2 text-center"><span className="text-[8px] font-semibold uppercase tracking-[0.06em] text-muted">{s.name.split(" ")[0]}</span></th>
+                ))}
+                <th className="p-3 text-center cursor-pointer" onClick={() => handleSort("finalScore")}>
+                  <div className="flex items-center gap-0.5 justify-center">
+                    <span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Score</span>
+                    <ArrowUpDown size={8} className={sortKey === "finalScore" ? "text-foreground" : "text-muted/40"} />
+                  </div>
+                </th>
+                <th className="p-3 text-center cursor-pointer" onClick={() => handleSort("confidence")}>
+                  <div className="flex items-center gap-0.5 justify-center">
+                    <span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Conf</span>
+                    <ArrowUpDown size={8} className={sortKey === "confidence" ? "text-foreground" : "text-muted/40"} />
+                  </div>
+                </th>
+                <th className="p-3 text-center"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Waterfall</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {adjustedBreakdowns.slice(0, 12).map((bd, idx) => {
+                const isExpanded = expandedProduct === bd.product.id;
+                const isComparing = compareIds.includes(bd.product.id);
+
+                return (
+                  <React.Fragment key={bd.product.id}>
+                    <tr
+                      className={`border-b border-border transition-colors cursor-pointer ${idx < 3 ? "bg-emerald-light/15" : "hover:bg-surface/20"} ${isExpanded ? "bg-surface/30" : ""} ${isComparing ? "ring-1 ring-inset ring-foreground/20" : ""}`}
+                      onClick={() => setExpandedProduct(isExpanded ? null : bd.product.id)}
+                    >
+                      {compareMode && (
+                        <td className="p-2 text-center" onClick={(e) => { e.stopPropagation(); toggleCompare(bd.product.id); }}>
+                          <div className={`w-4 h-4 rounded border-2 flex items-center justify-center ${isComparing ? "bg-foreground border-foreground" : "border-border"}`}>
+                            {isComparing && <Check size={10} className="text-white" />}
+                          </div>
+                        </td>
+                      )}
+                      <td className="p-3"><span className="text-[11px] font-bold text-muted">{idx + 1}</span></td>
+                      <td className="p-3">
+                        <div className="min-w-[140px]">
+                          <p className="text-[11px] font-semibold">{bd.product.name}</p>
+                          <p className="text-[9px] text-muted">{bd.product.brand} · {bd.product.category}</p>
+                        </div>
+                      </td>
+                      {bd.signals.map((s) => (
+                        <td key={s.name} className="p-2 text-center">
+                          <div className="flex flex-col items-center">
+                            <span className="text-[9px] font-bold">{s.contribution}</span>
+                            <div className="w-6 h-[3px] bg-surface rounded-full mt-0.5 overflow-hidden">
+                              <div className="h-full rounded-full bg-foreground" style={{ width: `${s.normalizedScore}%` }} />
+                            </div>
+                          </div>
+                        </td>
+                      ))}
+                      <td className="p-3 text-center"><ScoreRing score={bd.finalScore} size={32} strokeWidth={2.5} /></td>
+                      <td className="p-3 text-center">
+                        <span className={`text-[10px] font-bold ${bd.confidence >= 70 ? "text-emerald" : bd.confidence >= 50 ? "text-amber" : "text-rose"}`}>
+                          {bd.confidence}%
+                        </span>
+                      </td>
+                      <td className="p-3">
+                        {/* 3. Waterfall / stacked bar */}
+                        <div className="flex h-4 w-28 rounded overflow-hidden">
+                          {bd.signals.map((s, si) => {
+                            const colors = ["#0a0a0a", "#1a1a1a", "#333", "#4a4a4a", "#666", "#888", "#aaa", "#ccc"];
+                            const widthPct = bd.finalScore > 0 ? (s.contribution / bd.finalScore) * 100 : 0;
+                            return (
+                              <div key={si} className="h-full" style={{ width: `${widthPct}%`, backgroundColor: colors[si % colors.length] }}
+                                title={`${s.name}: ${s.contribution}pts`} />
+                            );
+                          })}
+                        </div>
+                      </td>
+                    </tr>
+
+                    {/* 8. Expandable Detail View */}
+                    {isExpanded && (
+                      <tr className="border-b border-border bg-surface/15">
+                        <td colSpan={compareMode ? signals.length + 6 : signals.length + 5} className="p-0">
+                          <div className="px-5 py-5">
+                            <div className="grid grid-cols-12 gap-6">
+
+                              {/* Col 1: Score breakdown + Radar */}
+                              <div className="col-span-3 space-y-4">
+                                <div>
+                                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Signal Breakdown</p>
+                                  <div className="space-y-2">
+                                    {bd.signals.map((s) => (
+                                      <div key={s.name}>
+                                        <div className="flex items-center justify-between text-[9px] mb-0.5">
+                                          <span className="font-medium w-20 truncate">{s.name}</span>
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-muted">raw:{s.rawScore}</span>
+                                            <span className="text-muted">norm:{s.normalizedScore}</span>
+                                            <span className="font-bold">+{s.contribution}</span>
+                                          </div>
+                                        </div>
+                                        <div className="h-[4px] bg-surface rounded-full overflow-hidden">
+                                          <div className="h-full rounded-full bg-foreground" style={{ width: `${s.normalizedScore}%` }} />
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div className="flex justify-center">
+                                  <RadarChart scores={bd.signals.slice(0, 6).map((s) => ({ label: s.name.split(" ")[0], value: s.normalizedScore }))} size={120} />
+                                </div>
+                              </div>
+
+                              {/* Col 2: Confidence + Explainability */}
+                              <div className="col-span-4 space-y-4">
+                                {/* 4. Confidence & Explainability */}
+                                <div className="rounded-xl border border-border p-3">
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <Gauge size={12} className="text-muted" />
+                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted">Confidence & Explainability</p>
+                                  </div>
+                                  <div className="flex items-center gap-3 mb-3">
+                                    <ScoreRing score={bd.confidence} size={48} strokeWidth={3} label={`${bd.confidence}%`} />
+                                    <div>
+                                      <p className={`text-[11px] font-bold ${bd.confidence >= 70 ? "text-emerald" : bd.confidence >= 50 ? "text-amber" : "text-rose"}`}>
+                                        {bd.confidence >= 70 ? "High Confidence" : bd.confidence >= 50 ? "Moderate Confidence" : "Low Confidence"}
+                                      </p>
+                                      <p className="text-[9px] text-muted mt-0.5">Based on signal consistency and data coverage</p>
+                                    </div>
+                                  </div>
+
+                                  <div className="space-y-2">
+                                    <div>
+                                      <p className="text-[8px] font-semibold text-emerald uppercase mb-1">Strongest Signals</p>
+                                      <div className="flex flex-wrap gap-1">
+                                        {bd.strongestSignals.map((s) => (
+                                          <span key={s} className="rounded-full bg-emerald-light px-2 py-0.5 text-[8px] font-semibold text-emerald">{s}</span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <p className="text-[8px] font-semibold text-rose uppercase mb-1">Weakest Signals</p>
+                                      <div className="flex flex-wrap gap-1">
+                                        {bd.weakestSignals.map((s) => (
+                                          <span key={s} className="rounded-full bg-rose-light px-2 py-0.5 text-[8px] font-semibold text-rose">{s}</span>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-3 pt-2 border-t border-border">
+                                    <p className="text-[9px] text-muted italic">{bd.explanation}</p>
+                                  </div>
+                                </div>
+
+                                {/* Logic type for this product */}
+                                <div className="rounded-xl border border-border p-3">
+                                  <p className="text-[9px] font-semibold uppercase tracking-wider text-muted mb-2">Logic Composition</p>
+                                  <div className="h-5 rounded-lg overflow-hidden flex mb-2">
+                                    <div className="bg-foreground flex items-center justify-center" style={{ width: `${bd.logicType.rules}%` }}>
+                                      <span className="text-[7px] font-bold text-white">{bd.logicType.rules}%</span>
+                                    </div>
+                                    <div className="bg-blue-500 flex items-center justify-center" style={{ width: `${bd.logicType.pattern}%` }}>
+                                      <span className="text-[7px] font-bold text-white">{bd.logicType.pattern}%</span>
+                                    </div>
+                                    <div className="bg-emerald flex items-center justify-center" style={{ width: `${bd.logicType.trend}%` }}>
+                                      <span className="text-[7px] font-bold text-white">{bd.logicType.trend}%</span>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center gap-3 text-[8px] text-muted">
+                                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-foreground" /> Rules</span>
+                                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500" /> Pattern</span>
+                                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald" /> Trend</span>
+                                  </div>
+                                </div>
+
+                                {/* Confidence timeline */}
+                                <div className="rounded-xl border border-border p-3">
+                                  <p className="text-[9px] font-semibold uppercase tracking-wider text-muted mb-2">Confidence Timeline (8 weeks)</p>
+                                  <Sparkline data={bd.weeklyConfidence} width={200} height={30} color={bd.confidence >= 70 ? "#059669" : bd.confidence >= 50 ? "#d97706" : "#e11d48"} />
+                                </div>
+                              </div>
+
+                              {/* Col 3: Alternatives + Benchmark */}
+                              <div className="col-span-5 space-y-4">
+                                {/* Benchmark vs category average */}
+                                <div className="rounded-xl border border-border p-3">
+                                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Benchmark vs Category Average</p>
+                                  <div className="flex items-center gap-4">
+                                    <div className="text-center">
+                                      <ScoreRing score={bd.finalScore} size={52} strokeWidth={3} label={`${bd.finalScore}%`} />
+                                      <p className="text-[8px] font-semibold mt-1">This Product</p>
+                                    </div>
+                                    <div className="flex-1">
+                                      <div className="flex items-end gap-1 h-12">
+                                        <div className="flex-1 bg-foreground rounded-t" style={{ height: `${(bd.finalScore / 100) * 100}%` }} />
+                                        <div className="flex-1 bg-surface rounded-t" style={{ height: `${(bd.categoryAvg / 100) * 100}%` }} />
+                                      </div>
+                                      <div className="flex text-center mt-1">
+                                        <span className="flex-1 text-[7px] font-bold">{bd.finalScore}%</span>
+                                        <span className="flex-1 text-[7px] text-muted">{bd.categoryAvg}%</span>
+                                      </div>
+                                      <div className="flex text-center">
+                                        <span className="flex-1 text-[6px] font-semibold">Product</span>
+                                        <span className="flex-1 text-[6px] text-muted">Cat Avg</span>
+                                      </div>
+                                    </div>
+                                    <div className="text-center">
+                                      <p className={`text-[16px] font-bold ${bd.finalScore > bd.categoryAvg ? "text-emerald" : bd.finalScore < bd.categoryAvg ? "text-rose" : "text-muted"}`}>
+                                        {bd.finalScore > bd.categoryAvg ? "+" : ""}{bd.finalScore - bd.categoryAvg}
+                                      </p>
+                                      <p className="text-[8px] text-muted">vs avg</p>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {/* Comparable alternatives */}
+                                <div className="rounded-xl border border-border p-3">
+                                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">
+                                    <Repeat2 size={10} className="inline mr-1" />
+                                    Comparable Alternatives in {bd.product.category}
+                                  </p>
+                                  {bd.alternatives.length === 0 ? (
+                                    <p className="text-[9px] text-muted italic">No alternatives in this category</p>
+                                  ) : (
+                                    <div className="space-y-2">
+                                      {/* Current product */}
+                                      <div className="flex items-center gap-2 rounded-lg bg-foreground/5 p-2">
+                                        <ScoreRing score={bd.finalScore} size={24} strokeWidth={2} />
+                                        <div className="flex-1 min-w-0">
+                                          <p className="text-[10px] font-semibold">{bd.product.name}</p>
+                                          <p className="text-[8px] text-muted">{bd.product.brand} (current)</p>
+                                        </div>
+                                        <span className="text-[10px] font-bold">{bd.product.price}</span>
+                                      </div>
+                                      {bd.alternatives.map((alt) => {
+                                        const altProduct = products.find((p) => p.id === alt.productId);
+                                        return (
+                                          <div key={alt.productId} className="flex items-center gap-2 rounded-lg border border-border p-2 hover:bg-surface/30 transition-colors">
+                                            <ScoreRing score={alt.score} size={24} strokeWidth={2} />
+                                            <div className="flex-1 min-w-0">
+                                              <p className="text-[10px] font-medium">{alt.productName}</p>
+                                              <p className="text-[8px] text-muted">{altProduct?.brand}</p>
+                                            </div>
+                                            <span className="text-[10px] font-medium">{altProduct?.price || "—"}</span>
+                                            <span className={`text-[8px] font-bold ${alt.score > bd.finalScore ? "text-emerald" : alt.score < bd.finalScore ? "text-rose" : "text-muted"}`}>
+                                              {alt.score > bd.finalScore ? "+" : ""}{alt.score - bd.finalScore}
+                                            </span>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -3748,7 +4347,7 @@ export default function MatchingPage() {
         )}
 
         {activeTab === "logic" && (
-          <RecommendationLogicSection signals={recommendationLogic} />
+          <RecommendationLogicSection intel={recommendationLogic} />
         )}
 
         {activeTab === "actions" && (
