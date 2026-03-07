@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "@/styles/globals.css";
 import { Sidebar } from "@/components/ui/sidebar";
+import { AICopilot } from "@/components/ui/ai-copilot";
 
 export const metadata: Metadata = {
   title: "ArchiPro — Architecture Intelligence Platform",
@@ -19,6 +20,7 @@ export default function RootLayout({
         <main className="ml-[240px] flex-1 min-h-screen bg-background transition-all duration-200">
           {children}
         </main>
+        <AICopilot />
       </body>
     </html>
   );
