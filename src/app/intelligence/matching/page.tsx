@@ -40,6 +40,17 @@ import {
   Crown,
   Wallet,
   FileText,
+  AlertTriangle,
+  ShoppingCart,
+  Bath,
+  UtensilsCrossed,
+  Sun,
+  Bed,
+  Sofa,
+  Link2,
+  CheckCircle2,
+  XCircle,
+  ArrowRight,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -146,12 +157,51 @@ interface ProjectProductMatch {
   allCategories: string[];
 }
 
+interface RoomProductRec {
+  product: Product;
+  score: number;
+  reasons: string[];
+  styleFit: number;
+  materialFit: number;
+  categoryFit: number;
+  tier: "premium" | "practical";
+  substituteIds: string[];
+}
+
+interface RoomCategoryGap {
+  category: string;
+  severity: "critical" | "optional-upgrade" | "recommended";
+  topProduct: Product | null;
+}
+
+interface RoomCompatPair {
+  catA: string;
+  catB: string;
+  score: number;
+  label: string;
+}
+
 interface RoomMatch {
   roomName: string;
   topCategories: [string, number][];
   topProducts: { id: string; name: string; count: number; brand: string }[];
   missing: string[];
   recommended: Product[];
+  // ─── Deep signals ───
+  completeness: number;
+  categoryCoverage: number;
+  missingCount: number;
+  estimatedBudget: number;
+  patternAlignment: number;
+  specReadiness: number;
+  detectedStyles: string[];
+  detectedMaterials: string[];
+  categoryGaps: RoomCategoryGap[];
+  productRecs: RoomProductRec[];
+  compatPairs: RoomCompatPair[];
+  criticalMissing: string[];
+  recommendedNext: string[];
+  optionalUpgrades: string[];
 }
 
 interface RecommendationSignal {
@@ -621,14 +671,14 @@ function computeProjectProductMatches(): ProjectProductMatch[] {
 }
 
 function computeRoomMatches(): RoomMatch[] {
+  const seed = (s: string) => { let h = 0; for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0; return Math.abs(h); };
+
   const roomData: Record<string, { categories: Map<string, number>; products: Map<string, { name: string; count: number; brand: string }> }> = {};
 
   specifications.forEach((spec) => {
     spec.rooms.forEach((room) => {
       const key = room.name;
-      if (!roomData[key]) {
-        roomData[key] = { categories: new Map(), products: new Map() };
-      }
+      if (!roomData[key]) roomData[key] = { categories: new Map(), products: new Map() };
       room.items.forEach((item) => {
         roomData[key].categories.set(item.category, (roomData[key].categories.get(item.category) || 0) + 1);
         const existing = roomData[key].products.get(item.productId);
@@ -638,6 +688,32 @@ function computeRoomMatches(): RoomMatch[] {
     });
   });
 
+  // ── Expected categories per room type ──
+  const roomExpectedCats: Record<string, string[]> = {
+    Kitchen: ["Hardware", "Lighting", "Surfaces", "Furniture"],
+    Bathroom: ["Hardware", "Lighting", "Surfaces"],
+    "Living Room": ["Lighting", "Furniture", "Surfaces"],
+    "Great Room": ["Lighting", "Furniture", "Surfaces"],
+    "Master Bedroom": ["Lighting", "Furniture"],
+    Bedroom: ["Lighting", "Furniture"],
+    Studio: ["Lighting", "Furniture"],
+    "Outdoor Deck": ["Lighting", "Furniture", "Surfaces"],
+    Outdoor: ["Lighting", "Furniture", "Surfaces"],
+  };
+
+  // ── Compatibility pairs for rooms ──
+  const compatDefs: Record<string, [string, string, string][]> = {
+    Kitchen: [["Hardware", "Lighting", "Finish harmony"], ["Surfaces", "Hardware", "Material match"], ["Lighting", "Furniture", "Style cohesion"], ["Hardware", "Surfaces", "Tone alignment"]],
+    Bathroom: [["Hardware", "Surfaces", "Tapware ↔ surfaces"], ["Lighting", "Surfaces", "Ambiance match"], ["Hardware", "Lighting", "Finish consistency"]],
+    "Living Room": [["Lighting", "Furniture", "Style cohesion"], ["Furniture", "Surfaces", "Material match"]],
+    "Great Room": [["Lighting", "Furniture", "Ambiance match"], ["Furniture", "Surfaces", "Tone alignment"]],
+    "Master Bedroom": [["Lighting", "Furniture", "Style cohesion"]],
+    Studio: [["Lighting", "Furniture", "Style cohesion"]],
+    "Outdoor Deck": [["Lighting", "Furniture", "Outdoor cohesion"], ["Furniture", "Surfaces", "Weatherproofing"]],
+  };
+
+  const allCats = [...new Set(products.map((p) => p.category))];
+
   return Object.entries(roomData).map(([roomName, data]) => {
     const topCategories = [...data.categories.entries()].sort((a, b) => b[1] - a[1]) as [string, number][];
     const topProducts = [...data.products.entries()]
@@ -645,14 +721,112 @@ function computeRoomMatches(): RoomMatch[] {
       .sort((a, b) => b.count - a.count);
 
     const usedCats = new Set(topCategories.map(([c]) => c));
-    const allCats = [...new Set(products.map((p) => p.category))];
     const missing = allCats.filter((c) => !usedCats.has(c));
-
     const recommended = products
       .filter((p) => missing.includes(p.category) && !data.products.has(p.id))
       .slice(0, 3);
 
-    return { roomName, topCategories, topProducts, missing, recommended };
+    // ── Completeness & coverage ──
+    const expectedCats = roomExpectedCats[roomName] || allCats.slice(0, 4);
+    const coveredExpected = expectedCats.filter((c) => usedCats.has(c));
+    const categoryCoverage = clamp(Math.round((coveredExpected.length / expectedCats.length) * 100), 0, 100);
+    const totalItems = topProducts.reduce((s, p) => s + p.count, 0);
+    const expectedItems = expectedCats.length * 3;
+    const completeness = clamp(Math.round((totalItems / expectedItems) * 100), 0, 100);
+    const missingCount = expectedCats.length - coveredExpected.length;
+
+    // ── Budget ──
+    const estimatedBudget = topProducts.reduce((s, p) => {
+      const prod = products.find((pr) => pr.id === p.id);
+      return s + (prod ? parsePrice(prod.price) * p.count : 0);
+    }, 0);
+
+    // ── Pattern alignment ──
+    const patternAlignment = clamp(Math.round(completeness * 0.4 + categoryCoverage * 0.4 + (seed(roomName) % 20) + 5), 0, 100);
+
+    // ── Spec readiness ──
+    const specReadiness = clamp(Math.round(completeness * 0.5 + categoryCoverage * 0.3 + (missingCount === 0 ? 20 : 0)), 0, 100);
+
+    // ── Detected styles/materials from tags of projects containing these products ──
+    const roomProductIds = new Set(topProducts.map((p) => p.id));
+    const relatedProjects = projects.filter((pr) => pr.products.some((pid) => roomProductIds.has(pid)));
+    const detectedStyles = [...new Set(relatedProjects.flatMap((pr) => pr.tags))];
+    const detectedMaterials = [...usedCats];
+
+    // ── Category gaps ──
+    const categoryGaps: RoomCategoryGap[] = expectedCats
+      .filter((c) => !usedCats.has(c))
+      .map((cat) => {
+        const topProduct = products.find((p) => p.category === cat && !data.products.has(p.id)) || null;
+        const isCore = expectedCats.indexOf(cat) < 2;
+        return {
+          category: cat,
+          severity: isCore ? "critical" as const : "recommended" as const,
+          topProduct,
+        };
+      });
+
+    // Add optional upgrades for categories that exist but are thin
+    const optionalUpgrades = [...usedCats].filter((c) => {
+      const count = data.categories.get(c) || 0;
+      return count < 2;
+    });
+    optionalUpgrades.forEach((cat) => {
+      const topProduct = products.find((p) => p.category === cat && !data.products.has(p.id)) || null;
+      categoryGaps.push({ category: cat, severity: "optional-upgrade", topProduct });
+    });
+
+    const criticalMissing = categoryGaps.filter((g) => g.severity === "critical").map((g) => g.category);
+    const recommendedNext = categoryGaps.filter((g) => g.severity === "recommended").map((g) => g.category);
+
+    // ── Product recommendations ──
+    const productRecs: RoomProductRec[] = products
+      .filter((p) => !data.products.has(p.id) && (missing.includes(p.category) || expectedCats.includes(p.category)))
+      .map((p) => {
+        const reasons: string[] = [];
+        const isMissing = missing.includes(p.category);
+        const categoryFit = isMissing ? clamp(65 + seed(p.id + roomName + "cf") % 30, 0, 100) : clamp(20 + seed(p.id + roomName + "cf") % 25, 0, 100);
+        if (isMissing) reasons.push(`Fills missing ${p.category}`);
+
+        const styleMatches = detectedStyles.filter((s) => p.name.toLowerCase().includes(s.toLowerCase()) || p.brand.toLowerCase().includes(s.toLowerCase()));
+        const styleFit = clamp(styleMatches.length > 0 ? 50 + styleMatches.length * 15 + seed(p.id + "rsf") % 20 : 15 + seed(p.id + "rsf") % 25, 0, 100);
+        if (styleMatches.length > 0) reasons.push(`Style: ${styleMatches.join(", ")}`);
+
+        const materialFit = clamp(usedCats.has(p.category) ? 40 + seed(p.id + "rmf") % 30 : 20 + seed(p.id + "rmf") % 20, 0, 100);
+
+        const score = clamp(Math.round(categoryFit * 0.35 + styleFit * 0.25 + materialFit * 0.2 + (seed(p.id + roomName) % 20)), 0, 100);
+
+        const substituteIds = products
+          .filter((sp) => sp.category === p.category && sp.id !== p.id && sp.brandId !== p.brandId)
+          .slice(0, 3).map((sp) => sp.id);
+
+        const tier: "premium" | "practical" = parsePrice(p.price) > 400 ? "premium" : "practical";
+
+        if (p.specSheet) reasons.push("Spec sheet available");
+        const momentum = productMomentumData.find((m) => m.productId === p.id);
+        if (momentum?.trend === "surging") reasons.push("Surging trend");
+        else if (momentum?.trend === "rising") reasons.push("Rising trend");
+
+        return { product: p, score, reasons, styleFit, materialFit, categoryFit, tier, substituteIds };
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10);
+
+    // ── Compatibility pairs ──
+    const pairDefs = compatDefs[roomName] || compatDefs["Living Room"] || [];
+    const compatPairs: RoomCompatPair[] = pairDefs.map(([catA, catB, label]) => {
+      const hasA = usedCats.has(catA);
+      const hasB = usedCats.has(catB);
+      const base = hasA && hasB ? 60 : hasA || hasB ? 35 : 10;
+      return { catA, catB, score: clamp(base + seed(roomName + catA + catB) % 30, 0, 100), label };
+    });
+
+    return {
+      roomName, topCategories, topProducts, missing, recommended,
+      completeness, categoryCoverage, missingCount, estimatedBudget, patternAlignment, specReadiness,
+      detectedStyles, detectedMaterials, categoryGaps, productRecs, compatPairs,
+      criticalMissing, recommendedNext, optionalUpgrades,
+    };
   });
 }
 
@@ -2129,88 +2303,426 @@ function ProjectToProductSection({ selectedProject, setSelectedProject, match, s
 
 // ─── Section 4: Room Matching ─────────────────────────────────────────────────
 
+const ROOM_ICONS: Record<string, React.ElementType> = {
+  Kitchen: UtensilsCrossed,
+  Bathroom: Bath,
+  "Living Room": Sofa,
+  "Great Room": Home,
+  "Master Bedroom": Bed,
+  Bedroom: Bed,
+  Studio: Palette,
+  "Outdoor Deck": Sun,
+  Outdoor: Sun,
+};
+
 function RoomMatchingSection({ roomMatches }: { roomMatches: RoomMatch[] }) {
+  const [expandedRoom, setExpandedRoom] = useState<string | null>(null);
+  const [savedRoomSets, setSavedRoomSets] = useState<Set<string>>(new Set());
+  const [addedToBoard, setAddedToBoard] = useState<Set<string>>(new Set());
+  const [addedToSpec, setAddedToSpec] = useState<Set<string>>(new Set());
+
+  const toggleRoomSaved = (name: string) => {
+    const next = new Set(savedRoomSets);
+    if (next.has(name)) next.delete(name); else next.add(name);
+    setSavedRoomSets(next);
+  };
+
+  const addAllToBoard = (room: RoomMatch) => {
+    const next = new Set(addedToBoard);
+    room.productRecs.forEach((r) => next.add(r.product.id));
+    setAddedToBoard(next);
+  };
+
+  const addAllToSpec = (room: RoomMatch) => {
+    const next = new Set(addedToSpec);
+    room.productRecs.forEach((r) => next.add(r.product.id));
+    setAddedToSpec(next);
+  };
+
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div className="rounded-2xl border border-border bg-white p-5">
-        <h2 className="text-[14px] font-semibold">Room-based Product Intelligence</h2>
-        <p className="text-[11px] text-muted mt-0.5">Analysis of product usage patterns across specification rooms</p>
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground">
+            <Grid3x3 size={16} className="text-white" />
+          </div>
+          <div>
+            <h2 className="text-[14px] font-semibold">Room-Level Design Assistant</h2>
+            <p className="text-[11px] text-muted mt-0.5">Completeness analysis, gap detection, and product recommendations per room</p>
+          </div>
+        </div>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        {roomMatches.map((room) => (
-          <div key={room.roomName} className="rounded-2xl border border-border bg-white overflow-hidden">
-            <div className="p-5 border-b border-border bg-surface/30">
-              <div className="flex items-center gap-3">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground">
-                  <Home size={16} className="text-white" />
-                </div>
-                <div>
-                  <h3 className="text-[14px] font-semibold">{room.roomName}</h3>
-                  <p className="text-[10px] text-muted">{room.topProducts.length} products · {room.topCategories.length} categories</p>
-                </div>
-              </div>
-            </div>
+      {/* 1. Room Summary Grid */}
+      <div className="grid grid-cols-3 gap-4">
+        {roomMatches.map((room) => {
+          const RIcon = ROOM_ICONS[room.roomName] || Home;
+          const isExpanded = expandedRoom === room.roomName;
+          const completenessColor = room.completeness >= 70 ? "text-emerald" : room.completeness >= 40 ? "text-amber" : "text-rose";
+          const coverageColor = room.categoryCoverage >= 70 ? "text-emerald" : room.categoryCoverage >= 40 ? "text-amber" : "text-rose";
 
-            <div className="p-4 border-b border-border">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Top Categories</p>
-              <div className="space-y-2">
-                {room.topCategories.map(([cat, count]) => (
-                  <div key={cat} className="flex items-center gap-3">
-                    <span className="w-20 text-[11px] font-medium truncate">{cat}</span>
-                    <MatchBar score={(count / Math.max(...room.topCategories.map(([, c]) => c))) * 100} />
-                    <span className="text-[10px] font-bold w-6 text-right">{count}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="p-4 border-b border-border">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Products Used</p>
-              <div className="space-y-1.5">
-                {room.topProducts.map((p) => (
-                  <div key={p.id} className="flex items-center justify-between rounded-lg bg-surface/50 px-3 py-2">
-                    <div>
-                      <p className="text-[11px] font-medium">{p.name}</p>
-                      <p className="text-[9px] text-muted">{p.brand}</p>
-                    </div>
-                    <span className="rounded-full bg-surface px-2 py-0.5 text-[9px] font-bold text-muted">×{p.count}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {room.missing.length > 0 && (
+          return (
+            <button
+              key={room.roomName}
+              onClick={() => setExpandedRoom(isExpanded ? null : room.roomName)}
+              className={`rounded-2xl border text-left transition-all ${isExpanded ? "border-foreground ring-2 ring-foreground/10 bg-surface/30" : "border-border bg-white hover:border-foreground/30"}`}
+            >
               <div className="p-4">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-amber mb-2">Missing Categories</p>
-                <div className="flex flex-wrap gap-1.5 mb-3">
-                  {room.missing.slice(0, 5).map((c) => (
-                    <span key={c} className="rounded-full bg-amber-light px-2 py-0.5 text-[9px] font-semibold text-amber">{c}</span>
+                <div className="flex items-center gap-2.5 mb-3">
+                  <div className={`flex h-8 w-8 items-center justify-center rounded-lg ${isExpanded ? "bg-foreground" : "bg-surface"}`}>
+                    <RIcon size={14} className={isExpanded ? "text-white" : "text-muted"} />
+                  </div>
+                  <div>
+                    <p className="text-[13px] font-semibold">{room.roomName}</p>
+                    <p className="text-[9px] text-muted">{room.topProducts.length} products · {room.topCategories.length} categories</p>
+                  </div>
+                  <ChevronDown size={12} className={`ml-auto text-muted transition-transform ${isExpanded ? "rotate-180" : ""}`} />
+                </div>
+
+                {/* KPI row */}
+                <div className="grid grid-cols-5 gap-1.5">
+                  {[
+                    { label: "Complete", value: `${room.completeness}%`, color: completenessColor },
+                    { label: "Coverage", value: `${room.categoryCoverage}%`, color: coverageColor },
+                    { label: "Missing", value: `${room.missingCount}`, color: room.missingCount > 0 ? "text-rose" : "text-emerald" },
+                    { label: "Budget", value: room.estimatedBudget > 0 ? `$${(room.estimatedBudget / 1000).toFixed(1)}k` : "—", color: "text-foreground" },
+                    { label: "Pattern", value: `${room.patternAlignment}%`, color: room.patternAlignment >= 60 ? "text-emerald" : "text-amber" },
+                  ].map((kpi) => (
+                    <div key={kpi.label} className="text-center rounded-lg bg-surface/50 py-1.5 px-1">
+                      <p className="text-[7px] font-semibold uppercase tracking-[0.06em] text-muted">{kpi.label}</p>
+                      <p className={`text-[12px] font-bold ${kpi.color}`}>{kpi.value}</p>
+                    </div>
                   ))}
                 </div>
-                {room.recommended.length > 0 && (
-                  <>
-                    <p className="text-[10px] font-semibold text-muted mb-1.5">Suggested Products</p>
-                    <div className="space-y-1.5">
-                      {room.recommended.map((p) => (
-                        <div key={p.id} className="flex items-center justify-between rounded-lg border border-dashed border-border px-3 py-2 hover:border-foreground/30 transition-colors">
-                          <div>
-                            <p className="text-[11px] font-medium">{p.name}</p>
-                            <p className="text-[9px] text-muted">{p.brand} · {p.category}</p>
+
+                {/* Quick gap indicators */}
+                {room.criticalMissing.length > 0 && (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {room.criticalMissing.map((c) => (
+                      <span key={c} className="rounded-full bg-rose-light px-1.5 py-0.5 text-[7px] font-bold text-rose">{c} missing</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* 6. Expanded Room Detail */}
+      {expandedRoom && (() => {
+        const room = roomMatches.find((r) => r.roomName === expandedRoom);
+        if (!room) return null;
+        const RIcon = ROOM_ICONS[room.roomName] || Home;
+
+        return (
+          <div className="rounded-2xl border border-border bg-white overflow-hidden">
+            {/* Room header with actions */}
+            <div className="p-5 border-b border-border bg-surface/20">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-foreground">
+                    <RIcon size={18} className="text-white" />
+                  </div>
+                  <div>
+                    <h3 className="text-[16px] font-bold">{room.roomName}</h3>
+                    <p className="text-[11px] text-muted">{room.topProducts.length} products · {room.topCategories.length} categories · Spec readiness {room.specReadiness}%</p>
+                  </div>
+                </div>
+                {/* 5. Room Actions */}
+                <div className="flex items-center gap-2">
+                  <button onClick={() => addAllToBoard(room)} className="flex items-center gap-1.5 rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">
+                    <Plus size={10} /> Add All to Board
+                  </button>
+                  <button onClick={() => addAllToSpec(room)} className="flex items-center gap-1.5 rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">
+                    <FileText size={10} /> Add All to Spec
+                  </button>
+                  <button onClick={() => toggleRoomSaved(room.roomName)} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[10px] font-medium transition-colors ${savedRoomSets.has(room.roomName) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+                    <Bookmark size={10} /> {savedRoomSets.has(room.roomName) ? "Saved" : "Save Room Set"}
+                  </button>
+                  <button className="flex items-center gap-1.5 rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">
+                    <Repeat2 size={10} /> Compare Alternatives
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5">
+              <div className="grid grid-cols-12 gap-6">
+
+                {/* Col 1 (4 cols): KPI + Style/Material reasoning + Cost */}
+                <div className="col-span-4 space-y-5">
+                  {/* KPIs */}
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Room Intelligence</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { label: "Completeness", value: room.completeness, suffix: "%" },
+                        { label: "Coverage", value: room.categoryCoverage, suffix: "%" },
+                        { label: "Pattern Align", value: room.patternAlignment, suffix: "%" },
+                        { label: "Spec Ready", value: room.specReadiness, suffix: "%" },
+                      ].map((kpi) => (
+                        <div key={kpi.label} className="rounded-xl bg-surface/50 p-3 text-center">
+                          <p className="text-[8px] font-semibold uppercase tracking-wider text-muted">{kpi.label}</p>
+                          <div className="mt-1">
+                            <ScoreRing score={kpi.value} size={42} strokeWidth={3} label={`${kpi.value}${kpi.suffix}`} />
                           </div>
-                          <button className="rounded-lg bg-surface p-1.5 text-muted hover:bg-foreground hover:text-white transition-colors">
-                            <Plus size={11} />
-                          </button>
                         </div>
                       ))}
                     </div>
-                  </>
-                )}
+                  </div>
+
+                  {/* Style & material reasoning */}
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Style & Material Signals</p>
+                    <div className="space-y-2">
+                      <div>
+                        <p className="text-[9px] font-medium text-muted mb-1">Detected Styles</p>
+                        <div className="flex flex-wrap gap-1">
+                          {room.detectedStyles.length > 0 ? room.detectedStyles.map((s) => (
+                            <span key={s} className="rounded-full bg-blue-50 px-2 py-0.5 text-[8px] font-semibold text-blue-600">{s}</span>
+                          )) : <span className="text-[9px] text-muted italic">No styles detected</span>}
+                        </div>
+                      </div>
+                      <div>
+                        <p className="text-[9px] font-medium text-muted mb-1">Material Categories</p>
+                        <div className="flex flex-wrap gap-1">
+                          {room.detectedMaterials.map((m) => (
+                            <span key={m} className="rounded-full bg-surface px-2 py-0.5 text-[8px] font-semibold text-foreground">{m}</span>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Cost estimate */}
+                  <div className="rounded-xl bg-surface/50 p-3">
+                    <p className="text-[9px] font-semibold uppercase tracking-wider text-muted mb-1">Room Budget Estimate</p>
+                    <p className="text-[20px] font-bold tracking-tight">${room.estimatedBudget.toLocaleString()}</p>
+                    <p className="text-[9px] text-muted">{room.topProducts.length} products specified</p>
+                  </div>
+                </div>
+
+                {/* Col 2 (4 cols): Missing item detection + Compatibility matrix */}
+                <div className="col-span-4 space-y-5">
+                  {/* 4. Missing Item Detection */}
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Gap Detection</p>
+                    <div className="space-y-2">
+                      {/* Critical missing */}
+                      {room.criticalMissing.length > 0 && (
+                        <div className="rounded-xl border border-rose/20 bg-rose-light/20 p-3">
+                          <div className="flex items-center gap-1.5 mb-1.5">
+                            <XCircle size={10} className="text-rose" />
+                            <p className="text-[9px] font-bold uppercase tracking-wider text-rose">Critical Missing</p>
+                          </div>
+                          <div className="space-y-1">
+                            {room.criticalMissing.map((c) => {
+                              const gap = room.categoryGaps.find((g) => g.category === c);
+                              return (
+                                <div key={c} className="flex items-center justify-between">
+                                  <span className="text-[10px] font-medium">{c}</span>
+                                  {gap?.topProduct && (
+                                    <span className="text-[8px] text-rose font-medium">Rec: {gap.topProduct.name}</span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Recommended next */}
+                      {room.recommendedNext.length > 0 && (
+                        <div className="rounded-xl border border-amber/20 bg-amber-light/20 p-3">
+                          <div className="flex items-center gap-1.5 mb-1.5">
+                            <AlertTriangle size={10} className="text-amber" />
+                            <p className="text-[9px] font-bold uppercase tracking-wider text-amber">Recommended Next</p>
+                          </div>
+                          <div className="space-y-1">
+                            {room.recommendedNext.map((c) => {
+                              const gap = room.categoryGaps.find((g) => g.category === c);
+                              return (
+                                <div key={c} className="flex items-center justify-between">
+                                  <span className="text-[10px] font-medium">{c}</span>
+                                  {gap?.topProduct && (
+                                    <span className="text-[8px] text-amber font-medium">Rec: {gap.topProduct.name}</span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Optional upgrades */}
+                      {room.optionalUpgrades.length > 0 && (
+                        <div className="rounded-xl border border-blue-200 bg-blue-50/30 p-3">
+                          <div className="flex items-center gap-1.5 mb-1.5">
+                            <ArrowUpRight size={10} className="text-blue-500" />
+                            <p className="text-[9px] font-bold uppercase tracking-wider text-blue-500">Optional Upgrades</p>
+                          </div>
+                          <div className="flex flex-wrap gap-1">
+                            {room.optionalUpgrades.map((c) => (
+                              <span key={c} className="rounded-full bg-blue-100 px-2 py-0.5 text-[8px] font-semibold text-blue-600">{c}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {room.criticalMissing.length === 0 && room.recommendedNext.length === 0 && (
+                        <div className="rounded-xl border border-emerald/20 bg-emerald-light/20 p-3 flex items-center gap-2">
+                          <CheckCircle2 size={12} className="text-emerald" />
+                          <p className="text-[10px] font-medium text-emerald">All expected categories covered</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 3. Compatibility Matrix */}
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">
+                      <Link2 size={10} className="inline mr-1" />
+                      Product Compatibility
+                    </p>
+                    {room.compatPairs.length === 0 ? (
+                      <p className="text-[9px] text-muted italic">No compatibility pairs defined</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {room.compatPairs.map((pair, i) => {
+                          const color = pair.score >= 70 ? "bg-emerald" : pair.score >= 40 ? "bg-amber" : "bg-rose";
+                          const textColor = pair.score >= 70 ? "text-emerald" : pair.score >= 40 ? "text-amber" : "text-rose";
+                          return (
+                            <div key={i} className="rounded-lg border border-border p-2.5">
+                              <div className="flex items-center justify-between mb-1.5">
+                                <div className="flex items-center gap-1.5 text-[10px]">
+                                  <span className="font-semibold">{pair.catA}</span>
+                                  <ArrowRight size={8} className="text-muted" />
+                                  <span className="font-semibold">{pair.catB}</span>
+                                </div>
+                                <span className={`text-[10px] font-bold ${textColor}`}>{pair.score}%</span>
+                              </div>
+                              <div className="h-[4px] bg-surface rounded-full overflow-hidden mb-1">
+                                <div className={`h-full rounded-full ${color}`} style={{ width: `${pair.score}%` }} />
+                              </div>
+                              <p className="text-[8px] text-muted">{pair.label}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Col 3 (4 cols): Product recommendation table */}
+                <div className="col-span-4">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">
+                    Recommended Products ({room.productRecs.length})
+                  </p>
+                  {room.productRecs.length === 0 ? (
+                    <p className="text-[9px] text-muted italic">No recommendations — room is fully specified</p>
+                  ) : (
+                    <div className="rounded-xl border border-border overflow-hidden">
+                      <table className="w-full">
+                        <thead>
+                          <tr className="bg-surface/40">
+                            <th className="px-2 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-left">Product</th>
+                            <th className="px-2 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Match</th>
+                            <th className="px-2 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Style</th>
+                            <th className="px-2 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Cat</th>
+                            <th className="px-2 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-right">Price</th>
+                            <th className="px-2 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Act</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {room.productRecs.map((rec, idx) => (
+                            <React.Fragment key={rec.product.id}>
+                              <tr className={`border-t border-border transition-colors ${idx < 3 ? "bg-emerald-light/15" : "hover:bg-surface/30"}`}>
+                                <td className="px-2 py-2">
+                                  <div className="min-w-[100px]">
+                                    <div className="flex items-center gap-1">
+                                      <p className="text-[10px] font-semibold truncate">{rec.product.name}</p>
+                                      {rec.tier === "premium" && <Crown size={8} className="text-amber shrink-0" />}
+                                    </div>
+                                    <p className="text-[8px] text-muted">{rec.product.brand} · {rec.product.category}</p>
+                                    {rec.reasons.length > 0 && (
+                                      <p className="text-[7px] text-muted mt-0.5 truncate">{rec.reasons[0]}</p>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="px-2 py-2 text-center">
+                                  <ScoreRing score={rec.score} size={28} strokeWidth={2.5} />
+                                </td>
+                                <td className="px-2 py-2 text-center"><DimCell score={rec.styleFit} /></td>
+                                <td className="px-2 py-2 text-center"><DimCell score={rec.categoryFit} /></td>
+                                <td className="px-2 py-2 text-right">
+                                  <span className="text-[10px] font-semibold whitespace-nowrap">{rec.product.price}</span>
+                                </td>
+                                <td className="px-2 py-2">
+                                  <div className="flex items-center gap-0.5 justify-center">
+                                    <button
+                                      onClick={() => { const next = new Set(addedToBoard); if (next.has(rec.product.id)) next.delete(rec.product.id); else next.add(rec.product.id); setAddedToBoard(next); }}
+                                      title="Add to Board"
+                                      className={`rounded p-1 transition-colors ${addedToBoard.has(rec.product.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}
+                                    >
+                                      <Plus size={9} />
+                                    </button>
+                                    <button
+                                      onClick={() => { const next = new Set(addedToSpec); if (next.has(rec.product.id)) next.delete(rec.product.id); else next.add(rec.product.id); setAddedToSpec(next); }}
+                                      title="Add to Spec"
+                                      className={`rounded p-1 transition-colors ${addedToSpec.has(rec.product.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}
+                                    >
+                                      <FileText size={9} />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+
+                              {/* Substitutes row */}
+                              {rec.substituteIds.length > 0 && (
+                                <tr className="border-t border-dashed border-border bg-surface/10">
+                                  <td colSpan={6} className="px-3 py-1.5">
+                                    <div className="flex items-center gap-1 text-[8px] text-muted">
+                                      <Repeat2 size={8} className="shrink-0" />
+                                      <span className="font-medium">Alternatives:</span>
+                                      {rec.substituteIds.map((sid) => {
+                                        const sp = products.find((p) => p.id === sid);
+                                        if (!sp) return null;
+                                        return (
+                                          <span key={sid} className="rounded-full bg-surface px-1.5 py-0.5 text-[7px] font-medium">{sp.name} · {sp.price}</span>
+                                        );
+                                      })}
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* Room-specific compatibility radar */}
+                  <div className="mt-4">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Room Compatibility Profile</p>
+                    <div className="flex justify-center">
+                      <RadarChart scores={[
+                        { label: "Complete", value: room.completeness },
+                        { label: "Coverage", value: room.categoryCoverage },
+                        { label: "Pattern", value: room.patternAlignment },
+                        { label: "Spec", value: room.specReadiness },
+                        { label: "Budget", value: clamp(Math.round(room.estimatedBudget > 0 ? 60 : 20), 0, 100) },
+                      ]} size={120} />
+                    </div>
+                  </div>
+                </div>
               </div>
-            )}
+            </div>
           </div>
-        ))}
-      </div>
+        );
+      })()}
     </div>
   );
 }
