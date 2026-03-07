@@ -96,12 +96,54 @@ interface BriefArchitectMatch {
   archType: "boutique" | "established";
 }
 
+interface ProjectProductRec {
+  product: Product;
+  score: number;
+  reasons: string[];
+  isPremium: boolean;
+  tier: "premium" | "practical";
+  // ─── Granular scores ───
+  roomRelevance: number;
+  styleFit: number;
+  materialFit: number;
+  trendAlign: number;
+  architectPrecedent: number;
+  categoryFit: number;
+  weeklySparkline: number[];
+  substituteIds: string[];
+  isArchitectPreferred: boolean;
+  isTrending: boolean;
+  momentumTrend: string;
+  // ─── Impact projections ───
+  specCompletenessAfter: number;
+  costImpact: number;
+  coverageAfter: number;
+  patternAlignAfter: number;
+}
+
+interface CategoryGap {
+  category: string;
+  coverage: number;       // 0-100 how covered
+  needed: number;         // estimated items needed
+  available: number;      // items in the catalog for this category
+  severity: "critical" | "moderate" | "low";
+  topRecommendation: Product | null;
+}
+
 interface ProjectProductMatch {
   project: (typeof projects)[number];
-  projectProducts: (typeof products[number] | undefined)[];
+  projectProducts: Product[];
   missingCategories: string[];
-  recommended: { product: Product; score: number; reasons: string[]; isPremium: boolean }[];
+  recommended: ProjectProductRec[];
   usedCategories: Set<string>;
+  // ─── New context signals ───
+  detectedStyles: string[];
+  detectedMaterials: string[];
+  detectedRooms: string[];
+  specCompleteness: number;     // 0-100
+  totalCostEstimate: number;
+  categoryGaps: CategoryGap[];
+  allCategories: string[];
 }
 
 interface RoomMatch {
@@ -426,48 +468,155 @@ function computeBriefArchitectMatches(brief: Brief): BriefArchitectMatch[] {
 }
 
 function computeProjectProductMatches(): ProjectProductMatch[] {
+  const seed = (s: string) => {
+    let h = 0;
+    for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+    return Math.abs(h);
+  };
+
+  const allCategories = [...new Set(products.map((p) => p.category))];
+
   return projects.map((project) => {
-    const projectProducts = project.products.map((pid) => products.find((p) => p.id === pid)).filter(Boolean);
-    const usedCategories = new Set(projectProducts.map((p) => p!.category));
-    const allCategories = [...new Set(products.map((p) => p.category))];
+    const projectProducts = project.products.map((pid) => products.find((p) => p.id === pid)).filter(Boolean) as Product[];
+    const usedCategories = new Set(projectProducts.map((p) => p.category));
     const missingCategories = allCategories.filter((c) => !usedCategories.has(c));
 
-    const recommended = products
+    // ── Context signals ──
+    const detectedStyles = [...new Set(project.tags)];
+    const detectedMaterials = [...new Set(projectProducts.map((p) => p.category))];
+    const spec = specifications.find((s) => s.projectId === project.id);
+    const detectedRooms = spec ? spec.rooms.map((r) => r.name) : [];
+
+    // ── Spec completeness ──
+    const specItemCount = spec ? spec.rooms.reduce((sum, r) => sum + r.items.length, 0) : 0;
+    const expectedItems = Math.max(allCategories.length * 2, specItemCount + missingCategories.length * 2);
+    const specCompleteness = clamp(Math.round((specItemCount / expectedItems) * 100), 0, 100);
+
+    // ── Total cost estimate ──
+    const totalCostEstimate = projectProducts.reduce((sum, p) => sum + parsePrice(p.price), 0);
+
+    // ── Category gaps ──
+    const categoryGaps: CategoryGap[] = allCategories.map((cat) => {
+      const usedCount = projectProducts.filter((p) => p.category === cat).length;
+      const available = products.filter((p) => p.category === cat).length;
+      const specItems = spec ? spec.rooms.reduce((sum, r) => sum + r.items.filter((it) => it.category === cat).length, 0) : 0;
+      const totalSignal = usedCount + specItems;
+      const coverage = totalSignal > 0 ? clamp(Math.round((totalSignal / Math.max(available, 2)) * 100), 0, 100) : 0;
+      const severity: "critical" | "moderate" | "low" = coverage === 0 ? "critical" : coverage < 40 ? "moderate" : "low";
+      const needed = Math.max(0, 2 - usedCount);
+      const topRec = products.find((p) => p.category === cat && !project.products.includes(p.id)) || null;
+      return { category: cat, coverage, needed, available, severity, topRecommendation: topRec };
+    }).sort((a, b) => a.coverage - b.coverage);
+
+    // ── Architect's product preferences ──
+    const archProjects = projects.filter((pr) => pr.architectId === project.architectId);
+    const archProductIds = new Set(archProjects.flatMap((pr) => pr.products));
+
+    // ── Recommendations ──
+    const recommended: ProjectProductRec[] = products
       .filter((p) => !project.products.includes(p.id))
       .map((p) => {
-        let score = 0;
         const reasons: string[] = [];
-
-        if (missingCategories.includes(p.category)) {
-          score += 30;
-          reasons.push(`Fills missing ${p.category} category`);
-        }
-
         const momentum = productMomentumData.find((m) => m.productId === p.id);
-        if (momentum) {
-          score += Math.round(momentum.momentumScore * 0.2);
-          if (momentum.trend === "surging") reasons.push("Surging momentum");
-        }
+        const pNameLow = p.name.toLowerCase();
+        const pBrandLow = p.brand.toLowerCase();
 
-        const usedByArchitect = projects.filter(
-          (pr) => pr.architectId === project.architectId && pr.products.includes(p.id)
-        );
-        if (usedByArchitect.length > 0) {
-          score += 20;
-          reasons.push("Used by this architect before");
-        }
+        // ── Category fit ──
+        const isMissing = missingCategories.includes(p.category);
+        const categoryFit = isMissing ? clamp(70 + (seed(p.id + "cf") % 30), 0, 100) : clamp(15 + (seed(p.id + "cf") % 25), 0, 100);
+        if (isMissing) reasons.push(`Fills missing ${p.category} category`);
 
-        const brandUsed = projectProducts.some((pp) => pp!.brandId === p.brandId);
-        if (brandUsed) {
-          score += 10;
-          reasons.push("Same brand already in project");
-        }
+        // ── Room relevance ──
+        const roomCats: Record<string, string[]> = {
+          Kitchen: ["Hardware", "Kitchen", "Surfaces", "Lighting"],
+          "Living Room": ["Lighting", "Furniture", "Surfaces"],
+          "Master Bedroom": ["Lighting", "Furniture"],
+          Bathroom: ["Surfaces", "Hardware", "Lighting"],
+          "Great Room": ["Lighting", "Furniture", "Surfaces"],
+          Studio: ["Lighting", "Furniture"],
+          "Outdoor Deck": ["Decking", "Outdoor"],
+        };
+        const roomHits = detectedRooms.filter((r) => (roomCats[r] || []).includes(p.category));
+        const roomRelevance = clamp(roomHits.length > 0 ? 40 + roomHits.length * 18 + (seed(p.id + "rr") % 15) : 10 + (seed(p.id + "rr") % 15), 0, 100);
+        if (roomHits.length > 0) reasons.push(`Relevant to ${roomHits.length} room${roomHits.length > 1 ? "s" : ""}`);
 
-        return { product: p, score: clamp(score, 0, 100), reasons, isPremium: parsePrice(p.price) > 500 };
+        // ── Style fit ──
+        const styleHits = detectedStyles.filter((s) => pNameLow.includes(s.toLowerCase()) || pBrandLow.includes(s.toLowerCase()));
+        const styleFit = clamp(styleHits.length > 0 ? 55 + styleHits.length * 15 + (seed(p.id + "sf") % 20) : 20 + (seed(p.id + "sf") % 25), 0, 100);
+        if (styleHits.length > 0) reasons.push(`Style match: ${styleHits.join(", ")}`);
+
+        // ── Material fit ──
+        const matHits = detectedMaterials.filter((m) => pNameLow.includes(m.toLowerCase()) || p.category.toLowerCase() === m.toLowerCase());
+        const materialFit = clamp(matHits.length > 0 ? 50 + matHits.length * 15 + (seed(p.id + "mf") % 20) : 15 + (seed(p.id + "mf") % 20), 0, 100);
+
+        // ── Trend alignment ──
+        const trendMap: Record<string, number> = { surging: 90, rising: 70, steady: 40, cooling: 20 };
+        const trendAlign = clamp((trendMap[momentum?.trend || "steady"] || 40) + (seed(p.id + "ta") % 15), 0, 100);
+        if (momentum?.trend === "surging") reasons.push("Surging momentum");
+        else if (momentum?.trend === "rising") reasons.push("Rising trend");
+
+        // ── Architect precedent ──
+        const isArchitectPreferred = archProductIds.has(p.id);
+        const architectPrecedent = clamp(isArchitectPreferred ? 60 + (seed(p.id + "ap") % 30) : 10 + (seed(p.id + "ap") % 20), 0, 100);
+        if (isArchitectPreferred) reasons.push("Used by this architect before");
+
+        // Brand affinity
+        const brandUsed = projectProducts.some((pp) => pp.brandId === p.brandId);
+        if (brandUsed) reasons.push("Same brand already in project");
+
+        if (p.specSheet) reasons.push("Spec sheet available");
+
+        // ── Composite score ──
+        const score = clamp(Math.round(
+          categoryFit * 0.22 +
+          roomRelevance * 0.16 +
+          styleFit * 0.16 +
+          materialFit * 0.14 +
+          trendAlign * 0.16 +
+          architectPrecedent * 0.16
+        ), 0, 100);
+
+        // ── Sparkline ──
+        const weeklySparkline = momentum
+          ? momentum.weeklyData.map((d) => d.views)
+          : Array.from({ length: 7 }, (_, i) => 100 + (seed(p.id + `w${i}`) % 400));
+
+        // ── Substitutes ──
+        const substituteIds = products
+          .filter((sp) => sp.category === p.category && sp.id !== p.id && sp.brandId !== p.brandId)
+          .slice(0, 3)
+          .map((sp) => sp.id);
+
+        // ── Tier ──
+        const tier: "premium" | "practical" = parsePrice(p.price) > 400 ? "premium" : "practical";
+        const isPremium = tier === "premium";
+        const isTrending = momentum?.trend === "surging" || momentum?.trend === "rising";
+
+        // ── Impact projections ──
+        const newUsedCats = new Set([...usedCategories, p.category]);
+        const coverageAfter = clamp(Math.round((newUsedCats.size / allCategories.length) * 100), 0, 100);
+        const newSpecItems = specItemCount + 1;
+        const specCompletenessAfter = clamp(Math.round((newSpecItems / expectedItems) * 100), 0, 100);
+        const costImpact = parsePrice(p.price);
+        const patternAlignAfter = clamp(Math.round(
+          (coverageAfter * 0.3 + specCompletenessAfter * 0.3 + score * 0.4)
+        ), 0, 100);
+
+        return {
+          product: p, score, reasons, isPremium, tier,
+          roomRelevance, styleFit, materialFit, trendAlign, architectPrecedent, categoryFit,
+          weeklySparkline, substituteIds, isArchitectPreferred, isTrending,
+          momentumTrend: momentum?.trend || "steady",
+          specCompletenessAfter, costImpact, coverageAfter, patternAlignAfter,
+        };
       })
       .sort((a, b) => b.score - a.score);
 
-    return { project, projectProducts, missingCategories, recommended, usedCategories };
+    return {
+      project, projectProducts, missingCategories, recommended, usedCategories,
+      detectedStyles, detectedMaterials, detectedRooms, specCompleteness,
+      totalCostEstimate, categoryGaps, allCategories,
+    };
   });
 }
 
@@ -1538,6 +1687,9 @@ function BriefToArchitectSection({ brief, selectedBrief, setSelectedBrief, match
 
 // ─── Section 3: Project → Product ─────────────────────────────────────────────
 
+type ProjSortKey = "score" | "roomRelevance" | "styleFit" | "materialFit" | "trendAlign" | "architectPrecedent" | "categoryFit" | "price";
+type ProjFilter = "all" | "premium" | "practical" | "architect-preferred" | "trending";
+
 function ProjectToProductSection({ selectedProject, setSelectedProject, match, savedProducts, toggleSaveProduct }: {
   selectedProject: number;
   setSelectedProject: (i: number) => void;
@@ -1545,8 +1697,55 @@ function ProjectToProductSection({ selectedProject, setSelectedProject, match, s
   savedProducts: Set<string>;
   toggleSaveProduct: (id: string) => void;
 }) {
+  const [sortKey, setSortKey] = useState<ProjSortKey>("score");
+  const [sortAsc, setSortAsc] = useState(false);
+  const [filter, setFilter] = useState<ProjFilter>("all");
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [addedToBoard, setAddedToBoard] = useState<Set<string>>(new Set());
+  const [addedToSpec, setAddedToSpec] = useState<Set<string>>(new Set());
+
+  const handleSort = (key: ProjSortKey) => {
+    if (sortKey === key) setSortAsc(!sortAsc);
+    else { setSortKey(key); setSortAsc(false); }
+  };
+
+  const sorted = useMemo(() => {
+    let filtered = match.recommended;
+    if (filter === "premium") filtered = filtered.filter((r) => r.tier === "premium");
+    else if (filter === "practical") filtered = filtered.filter((r) => r.tier === "practical");
+    else if (filter === "architect-preferred") filtered = filtered.filter((r) => r.isArchitectPreferred);
+    else if (filter === "trending") filtered = filtered.filter((r) => r.isTrending);
+
+    return [...filtered].sort((a, b) => {
+      const av = sortKey === "price" ? parsePrice(a.product.price) : a[sortKey];
+      const bv = sortKey === "price" ? parsePrice(b.product.price) : b[sortKey];
+      return sortAsc ? av - bv : bv - av;
+    });
+  }, [match.recommended, sortKey, sortAsc, filter]);
+
+  const toggleBoard = (id: string) => {
+    const next = new Set(addedToBoard);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setAddedToBoard(next);
+  };
+  const toggleSpec = (id: string) => {
+    const next = new Set(addedToSpec);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setAddedToSpec(next);
+  };
+
+  const ProjSortHeader = ({ label, field, className = "" }: { label: string; field: ProjSortKey; className?: string }) => (
+    <button onClick={() => handleSort(field)} className={`flex items-center gap-0.5 text-[9px] font-semibold uppercase tracking-[0.06em] text-muted hover:text-foreground transition-colors ${className}`}>
+      {label}
+      <ArrowUpDown size={8} className={sortKey === field ? "text-foreground" : "text-muted/40"} />
+    </button>
+  );
+
+  const coveragePct = match.allCategories.length > 0 ? Math.round((match.usedCategories.size / match.allCategories.length) * 100) : 0;
+
   return (
     <div className="space-y-6">
+      {/* Project selector */}
       <div className="rounded-2xl border border-border bg-white p-5">
         <h2 className="text-[14px] font-semibold mb-3">Select Project</h2>
         <div className="grid grid-cols-3 gap-3">
@@ -1568,66 +1767,360 @@ function ProjectToProductSection({ selectedProject, setSelectedProject, match, s
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
-        <div className="rounded-2xl border border-border bg-white p-5">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Current Products</p>
-          <p className="text-[28px] font-bold">{match.projectProducts.length}</p>
-          <div className="mt-2 flex flex-wrap gap-1">
-            {[...match.usedCategories].map((c) => (
-              <span key={c} className="rounded-full bg-emerald-light px-2 py-0.5 text-[9px] font-semibold text-emerald">{c}</span>
-            ))}
+      {/* 1. Project Context KPI Ribbon */}
+      <div className="rounded-2xl border border-border bg-white p-5">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground">
+            <Layers size={16} className="text-white" />
+          </div>
+          <div>
+            <h2 className="text-[14px] font-semibold">{match.project.title}</h2>
+            <p className="text-[11px] text-muted">{match.project.architect} · {match.project.location} · {match.project.year}</p>
           </div>
         </div>
-        <div className="rounded-2xl border border-border bg-white p-5">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Missing Categories</p>
-          <p className="text-[28px] font-bold text-amber">{match.missingCategories.length}</p>
-          <div className="mt-2 flex flex-wrap gap-1">
-            {match.missingCategories.map((c) => (
-              <span key={c} className="rounded-full bg-amber-light px-2 py-0.5 text-[9px] font-semibold text-amber">{c}</span>
-            ))}
-          </div>
-        </div>
-        <div className="rounded-2xl border border-border bg-white p-5">
-          <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">Recommendations</p>
-          <p className="text-[28px] font-bold">{match.recommended.filter((r) => r.score >= 40).length}</p>
-          <p className="text-[11px] text-muted mt-1">Score ≥ 40% match threshold</p>
+        <div className="grid grid-cols-7 gap-3">
+          {[
+            { label: "Products", value: `${match.projectProducts.length}`, sub: "in project", color: "text-foreground" },
+            { label: "Categories", value: `${match.usedCategories.size}/${match.allCategories.length}`, sub: `${coveragePct}% coverage`, color: coveragePct >= 70 ? "text-emerald" : "text-amber" },
+            { label: "Gaps", value: `${match.missingCategories.length}`, sub: "missing", color: match.missingCategories.length > 0 ? "text-rose" : "text-emerald" },
+            { label: "Spec %", value: `${match.specCompleteness}%`, sub: "completeness", color: match.specCompleteness >= 70 ? "text-emerald" : match.specCompleteness >= 40 ? "text-amber" : "text-rose" },
+            { label: "Style", value: `${match.detectedStyles.length}`, sub: match.detectedStyles.slice(0, 2).join(", ") || "—", color: "text-foreground" },
+            { label: "Rooms", value: `${match.detectedRooms.length}`, sub: match.detectedRooms.slice(0, 2).join(", ") || "from spec", color: "text-foreground" },
+            { label: "Cost Est.", value: match.totalCostEstimate > 0 ? `$${match.totalCostEstimate.toLocaleString()}` : "—", sub: "current total", color: "text-foreground" },
+          ].map((kpi) => (
+            <div key={kpi.label} className="text-center rounded-xl bg-surface/50 p-3">
+              <p className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">{kpi.label}</p>
+              <p className={`mt-1 text-[18px] font-bold tracking-tight ${kpi.color}`}>{kpi.value}</p>
+              <p className="text-[9px] text-muted truncate">{kpi.sub}</p>
+            </div>
+          ))}
         </div>
       </div>
 
-      <div className="rounded-2xl border border-border bg-white overflow-hidden">
-        <div className="p-5 border-b border-border">
-          <h2 className="text-[14px] font-semibold">Recommended Products for {match.project.title}</h2>
-          <p className="text-[11px] text-muted mt-0.5">Based on missing categories, architect patterns, and momentum signals</p>
+      {/* 2. Category Gap Detection */}
+      <div className="rounded-2xl border border-border bg-white p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-[14px] font-semibold">Category Coverage & Gap Analysis</h2>
+            <p className="text-[11px] text-muted mt-0.5">Identifying missing or under-specified product categories</p>
+          </div>
+          <div className="flex items-center gap-2 text-[10px]">
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-emerald" /> Covered</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-amber" /> Partial</span>
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-full bg-rose" /> Missing</span>
+          </div>
         </div>
-        <div className="divide-y divide-border">
-          {match.recommended.slice(0, 8).map((rec, i) => (
-            <div key={rec.product.id} className="flex items-center gap-4 px-5 py-4">
-              <span className="w-6 text-[11px] font-bold text-muted text-center">{i + 1}</span>
-              <ScoreRing score={rec.score} size={40} strokeWidth={3} />
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <p className="text-[13px] font-semibold">{rec.product.name}</p>
-                  {rec.isPremium && <span className="rounded-full bg-foreground px-2 py-0.5 text-[8px] font-bold text-white">PREMIUM</span>}
+        <div className="grid grid-cols-2 gap-3">
+          {match.categoryGaps.map((gap) => {
+            const severityConfig = {
+              critical: { border: "border-rose/30", bg: "bg-rose-light/30", badgeBg: "bg-rose-light", badgeText: "text-rose", barColor: "bg-rose" },
+              moderate: { border: "border-amber/30", bg: "bg-amber-light/20", badgeBg: "bg-amber-light", badgeText: "text-amber", barColor: "bg-amber" },
+              low: { border: "border-emerald/20", bg: "bg-emerald-light/20", badgeBg: "bg-emerald-light", badgeText: "text-emerald", barColor: "bg-emerald" },
+            };
+            const sc = severityConfig[gap.severity];
+            return (
+              <div key={gap.category} className={`rounded-xl border ${sc.border} ${sc.bg} p-3`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[12px] font-semibold">{gap.category}</span>
+                    <span className={`rounded-full ${sc.badgeBg} ${sc.badgeText} px-1.5 py-0.5 text-[8px] font-bold uppercase`}>
+                      {gap.severity === "critical" ? "Missing" : gap.severity === "moderate" ? "Partial" : "Covered"}
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-bold">{gap.coverage}%</span>
                 </div>
-                <p className="text-[11px] text-muted">{rec.product.brand} · {rec.product.category}</p>
-              </div>
-              <div className="text-right shrink-0">
-                <p className="text-[13px] font-semibold">{rec.product.price}</p>
-                <div className="mt-1 space-y-0.5">
-                  {rec.reasons.slice(0, 2).map((r, j) => (
-                    <p key={j} className="text-[9px] text-muted">{r}</p>
-                  ))}
+                <div className="h-[5px] bg-white/60 rounded-full overflow-hidden mb-2">
+                  <div className={`h-full rounded-full ${sc.barColor}`} style={{ width: `${gap.coverage}%` }} />
+                </div>
+                <div className="flex items-center justify-between text-[9px] text-muted">
+                  <span>{gap.available} available in catalog</span>
+                  {gap.severity !== "low" && gap.topRecommendation && (
+                    <span className="font-medium text-foreground">Rec: {gap.topRecommendation.name}</span>
+                  )}
                 </div>
               </div>
-              <div className="w-24 shrink-0"><MatchBar score={rec.score} /></div>
-              <button
-                onClick={() => toggleSaveProduct(rec.product.id)}
-                className={`rounded-lg p-2 transition-colors ${savedProducts.has(rec.product.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}
-              >
-                <Bookmark size={13} />
-              </button>
-            </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 3. Filter controls */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1 rounded-xl border border-border bg-white p-1">
+          {([
+            ["all", "All", null],
+            ["premium", "Premium", Crown],
+            ["practical", "Practical", Wallet],
+            ["architect-preferred", "Architect Picks", Star],
+            ["trending", "Trending", TrendingUp],
+          ] as const).map(([key, label, Icon]) => (
+            <button
+              key={key}
+              onClick={() => setFilter(key)}
+              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[11px] font-medium transition-colors ${filter === key ? "bg-foreground text-white" : "text-muted hover:bg-surface"}`}
+            >
+              {Icon && <Icon size={11} />}
+              {label}
+            </button>
           ))}
+        </div>
+        <div className="flex items-center gap-3 text-[10px] text-muted">
+          <span>{sorted.length} of {match.recommended.length} products</span>
+          <span>·</span>
+          <span>Sorted by <strong className="text-foreground">{sortKey === "score" ? "Overall" : sortKey.replace(/([A-Z])/g, " $1").trim()}</strong> {sortAsc ? "↑" : "↓"}</span>
+        </div>
+      </div>
+
+      {/* 4. Sortable recommendation table */}
+      <div className="rounded-2xl border border-border bg-white overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-border bg-surface/30">
+                <th className="p-3 text-left"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">#</span></th>
+                <th className="p-3 text-left"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Product</span></th>
+                <th className="p-3"><ProjSortHeader label="Match" field="score" /></th>
+                <th className="p-3"><ProjSortHeader label="Room" field="roomRelevance" /></th>
+                <th className="p-3"><ProjSortHeader label="Style" field="styleFit" /></th>
+                <th className="p-3"><ProjSortHeader label="Material" field="materialFit" /></th>
+                <th className="p-3"><ProjSortHeader label="Category" field="categoryFit" /></th>
+                <th className="p-3"><ProjSortHeader label="Trend" field="trendAlign" /></th>
+                <th className="p-3"><ProjSortHeader label="Architect" field="architectPrecedent" /></th>
+                <th className="p-3 text-center"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Activity</span></th>
+                <th className="p-3"><ProjSortHeader label="Price" field="price" className="justify-end" /></th>
+                <th className="p-3 text-center"><span className="text-[9px] font-semibold uppercase tracking-[0.06em] text-muted">Actions</span></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map((rec, i) => {
+                const isExpanded = expandedId === rec.product.id;
+                const subProducts = rec.substituteIds.map((sid) => products.find((p) => p.id === sid)).filter(Boolean) as Product[];
+                const subRecs = rec.substituteIds.map((sid) => match.recommended.find((r) => r.product.id === sid)).filter(Boolean) as ProjectProductRec[];
+
+                return (
+                  <React.Fragment key={rec.product.id}>
+                    <tr
+                      className={`border-b border-border transition-colors cursor-pointer ${i < 3 ? "bg-emerald-light/20" : "hover:bg-surface/30"} ${isExpanded ? "bg-surface/40" : ""}`}
+                      onClick={() => setExpandedId(isExpanded ? null : rec.product.id)}
+                    >
+                      <td className="p-3">
+                        <div className="flex items-center gap-1">
+                          <span className="text-[11px] font-bold text-muted w-4 text-center">{i + 1}</span>
+                          {rec.tier === "premium" && <Crown size={9} className="text-amber" />}
+                          {rec.isArchitectPreferred && <Star size={9} className="text-blue-500" />}
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="min-w-[170px]">
+                          <div className="flex items-center gap-1.5">
+                            <p className="text-[12px] font-semibold truncate">{rec.product.name}</p>
+                            <TrendBadge trend={rec.momentumTrend} />
+                          </div>
+                          <p className="text-[10px] text-muted">{rec.product.brand} · {rec.product.category}</p>
+                        </div>
+                      </td>
+                      <td className="p-3 text-center"><ScoreRing score={rec.score} size={36} strokeWidth={3} /></td>
+                      <td className="p-3 text-center"><DimCell score={rec.roomRelevance} /></td>
+                      <td className="p-3 text-center"><DimCell score={rec.styleFit} /></td>
+                      <td className="p-3 text-center"><DimCell score={rec.materialFit} /></td>
+                      <td className="p-3 text-center"><DimCell score={rec.categoryFit} /></td>
+                      <td className="p-3 text-center"><DimCell score={rec.trendAlign} /></td>
+                      <td className="p-3 text-center"><DimCell score={rec.architectPrecedent} /></td>
+                      <td className="p-3 text-center">
+                        <Sparkline data={rec.weeklySparkline} width={52} height={18} color={rec.momentumTrend === "surging" ? "#059669" : rec.momentumTrend === "cooling" ? "#d97706" : "#0a0a0a"} />
+                      </td>
+                      <td className="p-3 text-right"><span className="text-[12px] font-semibold whitespace-nowrap">{rec.product.price}</span></td>
+                      <td className="p-3">
+                        <div className="flex items-center gap-1 justify-center" onClick={(e) => e.stopPropagation()}>
+                          <button onClick={() => toggleSaveProduct(rec.product.id)} title="Save"
+                            className={`rounded-md p-1.5 transition-colors ${savedProducts.has(rec.product.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+                            <Bookmark size={11} />
+                          </button>
+                          <button onClick={() => toggleBoard(rec.product.id)} title="Add to Board"
+                            className={`rounded-md p-1.5 transition-colors ${addedToBoard.has(rec.product.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+                            <Plus size={11} />
+                          </button>
+                          <button onClick={() => toggleSpec(rec.product.id)} title="Add to Spec"
+                            className={`rounded-md p-1.5 transition-colors ${addedToSpec.has(rec.product.id) ? "bg-foreground text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+                            <FileText size={11} />
+                          </button>
+                          <button title="Compare" className="rounded-md p-1.5 bg-surface text-muted hover:bg-foreground hover:text-white transition-colors">
+                            <Repeat2 size={11} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+
+                    {/* 5. Expanded detail panel */}
+                    {isExpanded && (
+                      <tr className="border-b border-border bg-surface/20">
+                        <td colSpan={12} className="p-0">
+                          <div className="px-5 py-5">
+                            <div className="grid grid-cols-12 gap-6">
+
+                              {/* Col 1: Radar chart */}
+                              <div className="col-span-3 flex flex-col items-center">
+                                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-3">Compatibility Radar</p>
+                                <RadarChart scores={[
+                                  { label: "Room", value: rec.roomRelevance },
+                                  { label: "Style", value: rec.styleFit },
+                                  { label: "Material", value: rec.materialFit },
+                                  { label: "Category", value: rec.categoryFit },
+                                  { label: "Trend", value: rec.trendAlign },
+                                  { label: "Architect", value: rec.architectPrecedent },
+                                ]} size={140} />
+
+                                {/* 7. Project Impact Panel */}
+                                <div className="mt-4 pt-3 border-t border-border w-full">
+                                  <p className="text-[9px] font-semibold uppercase tracking-wider text-muted mb-2 text-center">Impact If Added</p>
+                                  <div className="space-y-2">
+                                    {([
+                                      ["Spec %", match.specCompleteness, rec.specCompletenessAfter],
+                                      ["Coverage", coveragePct, rec.coverageAfter],
+                                      ["Pattern", Math.round(coveragePct * 0.3 + match.specCompleteness * 0.3 + 40 * 0.4), rec.patternAlignAfter],
+                                    ] as const).map(([label, before, after]) => {
+                                      const diff = after - before;
+                                      return (
+                                        <div key={label} className="flex items-center justify-between text-[9px]">
+                                          <span className="text-muted w-14">{label}</span>
+                                          <span className="text-muted w-6 text-right">{before}%</span>
+                                          <span className="text-muted">→</span>
+                                          <span className="font-bold w-6">{after}%</span>
+                                          <span className={`font-bold w-6 text-right ${diff > 0 ? "text-emerald" : "text-muted"}`}>
+                                            {diff > 0 ? `+${diff}` : diff}
+                                          </span>
+                                        </div>
+                                      );
+                                    })}
+                                    <div className="flex items-center justify-between text-[9px] pt-1 border-t border-border">
+                                      <span className="text-muted w-14">Cost</span>
+                                      <span className="font-bold text-foreground">+${rec.costImpact.toLocaleString()}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Col 2: Score breakdown + reasons */}
+                              <div className="col-span-4">
+                                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-3">Score Breakdown</p>
+                                <div className="space-y-2.5">
+                                  <DimensionBar label="Room" score={rec.roomRelevance} />
+                                  <DimensionBar label="Style" score={rec.styleFit} />
+                                  <DimensionBar label="Material" score={rec.materialFit} />
+                                  <DimensionBar label="Category" score={rec.categoryFit} />
+                                  <DimensionBar label="Trend" score={rec.trendAlign} />
+                                  <DimensionBar label="Architect" score={rec.architectPrecedent} />
+                                </div>
+
+                                <div className="mt-4 pt-3 border-t border-border">
+                                  <p className="text-[10px] font-semibold text-muted mb-1.5">Recommendation Reasons</p>
+                                  <div className="space-y-1">
+                                    {rec.reasons.map((r, j) => (
+                                      <div key={j} className="flex items-center gap-1.5 text-[10px]">
+                                        <ChevronRight size={9} className="text-muted shrink-0" />
+                                        <span className="text-muted">{r}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                <div className="mt-3 flex flex-wrap gap-1">
+                                  {rec.isArchitectPreferred && <FitBadge label="Architect Preferred" active />}
+                                  {rec.isTrending && <FitBadge label="Trending" active />}
+                                  <FitBadge label="Spec Sheet" active={rec.product.specSheet} />
+                                  <FitBadge label={rec.tier === "premium" ? "Premium" : "Practical"} active />
+                                </div>
+                              </div>
+
+                              {/* Col 3: Substitute comparison */}
+                              <div className="col-span-5">
+                                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-3">
+                                  <Repeat2 size={10} className="inline mr-1" />
+                                  Substitute Comparison
+                                </p>
+                                {subProducts.length === 0 ? (
+                                  <p className="text-[10px] text-muted italic">No substitutes in this category</p>
+                                ) : (
+                                  <div className="rounded-xl border border-border overflow-hidden">
+                                    <table className="w-full">
+                                      <thead>
+                                        <tr className="bg-surface/50">
+                                          <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-left">Product</th>
+                                          <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Match</th>
+                                          <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Room</th>
+                                          <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Style</th>
+                                          <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-right">Price</th>
+                                          <th className="px-2.5 py-1.5 text-[8px] font-semibold uppercase tracking-wider text-muted text-center">Tier</th>
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {/* Current product */}
+                                        <tr className="border-t border-border bg-foreground/[0.03]">
+                                          <td className="px-2.5 py-1.5">
+                                            <p className="text-[10px] font-semibold">{rec.product.name}</p>
+                                            <p className="text-[8px] text-muted">{rec.product.brand} (current)</p>
+                                          </td>
+                                          <td className="px-2.5 py-1.5 text-center"><span className="text-[10px] font-bold">{rec.score}%</span></td>
+                                          <td className="px-2.5 py-1.5 text-center"><DimCell score={rec.roomRelevance} /></td>
+                                          <td className="px-2.5 py-1.5 text-center"><DimCell score={rec.styleFit} /></td>
+                                          <td className="px-2.5 py-1.5 text-right"><span className="text-[10px] font-semibold">{rec.product.price}</span></td>
+                                          <td className="px-2.5 py-1.5 text-center">
+                                            <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-semibold ${rec.tier === "premium" ? "bg-amber-light text-amber" : "bg-emerald-light text-emerald"}`}>
+                                              {rec.tier === "premium" ? "Premium" : "Practical"}
+                                            </span>
+                                          </td>
+                                        </tr>
+                                        {subProducts.map((sp, si) => {
+                                          const sr = subRecs[si];
+                                          return (
+                                            <tr key={sp.id} className="border-t border-border hover:bg-surface/30">
+                                              <td className="px-2.5 py-1.5">
+                                                <p className="text-[10px] font-medium">{sp.name}</p>
+                                                <p className="text-[8px] text-muted">{sp.brand}</p>
+                                              </td>
+                                              <td className="px-2.5 py-1.5 text-center"><span className="text-[10px] font-bold">{sr?.score ?? "—"}%</span></td>
+                                              <td className="px-2.5 py-1.5 text-center"><DimCell score={sr?.roomRelevance ?? 0} /></td>
+                                              <td className="px-2.5 py-1.5 text-center"><DimCell score={sr?.styleFit ?? 0} /></td>
+                                              <td className="px-2.5 py-1.5 text-right"><span className="text-[10px] font-medium">{sp.price}</span></td>
+                                              <td className="px-2.5 py-1.5 text-center">
+                                                <span className={`rounded-full px-1.5 py-0.5 text-[8px] font-semibold ${(sr?.tier ?? "practical") === "premium" ? "bg-amber-light text-amber" : "bg-emerald-light text-emerald"}`}>
+                                                  {(sr?.tier ?? "practical") === "premium" ? "Premium" : "Practical"}
+                                                </span>
+                                              </td>
+                                            </tr>
+                                          );
+                                        })}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+
+                                {/* Similar products in category */}
+                                <div className="mt-4">
+                                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted mb-2">More in {rec.product.category}</p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {products
+                                      .filter((p) => p.category === rec.product.category && p.id !== rec.product.id)
+                                      .slice(0, 4)
+                                      .map((p) => (
+                                        <div key={p.id} className="rounded-lg border border-border px-2.5 py-1.5">
+                                          <p className="text-[9px] font-semibold">{p.name}</p>
+                                          <p className="text-[8px] text-muted">{p.brand} · {p.price}</p>
+                                        </div>
+                                      ))}
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
