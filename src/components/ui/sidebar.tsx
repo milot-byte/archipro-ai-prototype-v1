@@ -27,6 +27,7 @@ import {
   LogOut,
   HelpCircle,
   Plus,
+  Sparkles,
 } from "lucide-react";
 
 interface NavItem {
@@ -38,6 +39,7 @@ interface NavItem {
 
 const intelligenceNav: NavItem[] = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/intelligence/patterns", label: "Design Patterns", icon: Sparkles },
   { href: "/market-trends", label: "Market Trends", icon: BarChart3 },
   { href: "/momentum", label: "Product Momentum", icon: TrendingUp },
   { href: "/influence", label: "Architect Influence", icon: Crown },
