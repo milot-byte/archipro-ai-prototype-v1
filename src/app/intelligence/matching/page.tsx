@@ -59,6 +59,12 @@ import {
   GitBranch,
   Activity,
   Scale,
+  Clock,
+  Share2,
+  Trash2,
+  ExternalLink,
+  ClipboardList,
+  Send,
 } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -4091,41 +4097,199 @@ function RecommendationLogicSection({ intel }: { intel: RecommendationIntel }) {
 
 // ─── Section 7: Actions ───────────────────────────────────────────────────────
 
+interface ActionHistoryEntry {
+  id: string;
+  action: string;
+  target: string;
+  timestamp: string;
+  icon: React.ElementType;
+}
+
 function MatchingActionsSection({ savedProducts, shortlistedArchitects, toggleSaveProduct, toggleShortlistArchitect }: {
   savedProducts: Set<string>;
   shortlistedArchitects: Set<string>;
   toggleSaveProduct: (id: string) => void;
   toggleShortlistArchitect: (id: string) => void;
 }) {
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
+  const [selectedArchitectIds, setSelectedArchitectIds] = useState<Set<string>>(new Set());
+  const [addedToBoard, setAddedToBoard] = useState<Set<string>>(new Set());
+  const [addedToSpec, setAddedToSpec] = useState<Set<string>>(new Set());
+  const [exported, setExported] = useState<Set<string>>(new Set());
+  const [compareProducts, setCompareProducts] = useState<string[]>([]);
+  const [compareArchitects, setCompareArchitects] = useState<string[]>([]);
+  const [actionHistory, setActionHistory] = useState<ActionHistoryEntry[]>([]);
+  const [boardCreated, setBoardCreated] = useState(false);
+  const [briefCreated, setBriefCreated] = useState(false);
+  const [shared, setShared] = useState(false);
+  const [exportedSet, setExportedSet] = useState(false);
+
+  const addAction = (action: string, target: string, icon: React.ElementType) => {
+    setActionHistory((prev) => [{ id: `${Date.now()}`, action, target, timestamp: new Date().toLocaleTimeString(), icon }, ...prev].slice(0, 20));
+  };
+
+  // ── Multi-select helpers ──
+  const toggleSelectProduct = (id: string) => {
+    const next = new Set(selectedProductIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setSelectedProductIds(next);
+  };
+  const toggleSelectArchitect = (id: string) => {
+    const next = new Set(selectedArchitectIds);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    setSelectedArchitectIds(next);
+  };
+  const selectAllProducts = () => setSelectedProductIds(new Set(savedProducts));
+  const deselectAllProducts = () => setSelectedProductIds(new Set());
+  const selectAllArchitects = () => setSelectedArchitectIds(new Set(shortlistedArchitects));
+  const deselectAllArchitects = () => setSelectedArchitectIds(new Set());
+
+  // ── Batch actions ──
+  const batchAddToBoard = () => {
+    const next = new Set(addedToBoard);
+    selectedProductIds.forEach((id) => next.add(id));
+    setAddedToBoard(next);
+    addAction("Added to board", `${selectedProductIds.size} products`, Plus);
+  };
+  const batchAddToSpec = () => {
+    const next = new Set(addedToSpec);
+    selectedProductIds.forEach((id) => next.add(id));
+    setAddedToSpec(next);
+    addAction("Added to spec", `${selectedProductIds.size} products`, FileText);
+  };
+  const batchExport = () => {
+    const next = new Set(exported);
+    selectedProductIds.forEach((id) => next.add(id));
+    setExported(next);
+    addAction("Exported", `${selectedProductIds.size} products`, Download);
+  };
+  const batchRemove = () => {
+    selectedProductIds.forEach((id) => toggleSaveProduct(id));
+    addAction("Removed", `${selectedProductIds.size} products`, Trash2);
+    setSelectedProductIds(new Set());
+  };
+
+  // ── Compare helpers ──
+  const toggleCompareProduct = (id: string) => {
+    setCompareProducts((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : prev.length < 2 ? [...prev, id] : prev);
+  };
+  const toggleCompareArchitect = (id: string) => {
+    setCompareArchitects((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : prev.length < 2 ? [...prev, id] : prev);
+  };
+
+  // ── Summary stats ──
+  const savedProductsList = [...savedProducts].map((id) => products.find((p) => p.id === id)).filter(Boolean) as Product[];
+  const savedCategories = new Set(savedProductsList.map((p) => p.category));
+  const estimatedBudget = savedProductsList.reduce((s, p) => s + parsePrice(p.price), 0);
+  const allCategories = [...new Set(products.map((p) => p.category))];
+  const coveragePct = allCategories.length > 0 ? Math.round((savedCategories.size / allCategories.length) * 100) : 0;
+
+  // ── Persistence state helper ──
+  const ProductStateBadges = ({ pid }: { pid: string }) => (
+    <div className="flex items-center gap-0.5">
+      {savedProducts.has(pid) && <span className="rounded-full bg-foreground px-1 py-0.5 text-[6px] font-bold text-white">SAVED</span>}
+      {addedToBoard.has(pid) && <span className="rounded-full bg-blue-500 px-1 py-0.5 text-[6px] font-bold text-white">BOARD</span>}
+      {addedToSpec.has(pid) && <span className="rounded-full bg-emerald px-1 py-0.5 text-[6px] font-bold text-white">SPEC</span>}
+      {exported.has(pid) && <span className="rounded-full bg-amber px-1 py-0.5 text-[6px] font-bold text-white">EXPORTED</span>}
+    </div>
+  );
+
   return (
     <div className="space-y-6">
-      {/* Saved Products */}
-      <div className="rounded-2xl border border-border bg-white p-6">
-        <div className="flex items-center justify-between mb-5">
+
+      {/* 5. Recommendation Set Summary */}
+      <div className="rounded-2xl border border-border bg-white p-5">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground"><ClipboardList size={16} className="text-white" /></div>
+          <div>
+            <h2 className="text-[14px] font-semibold">Matching Session Summary</h2>
+            <p className="text-[11px] text-muted">Overview of all selections, shortlists, and estimated impacts</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-6 gap-3">
+          {[
+            { label: "Saved Products", value: savedProducts.size, color: "text-foreground", icon: Bookmark },
+            { label: "Shortlisted Architects", value: shortlistedArchitects.size, color: "text-blue-500", icon: Star },
+            { label: "Categories Covered", value: `${savedCategories.size}/${allCategories.length}`, color: coveragePct >= 60 ? "text-emerald" : "text-amber", icon: Layers },
+            { label: "Coverage %", value: `${coveragePct}%`, color: coveragePct >= 60 ? "text-emerald" : "text-amber", icon: Target },
+            { label: "Est. Budget", value: estimatedBudget > 0 ? `$${(estimatedBudget / 1000).toFixed(1)}k` : "—", color: "text-foreground", icon: Wallet },
+            { label: "Actions Taken", value: actionHistory.length, color: "text-muted", icon: Clock },
+          ].map((kpi) => (
+            <div key={kpi.label} className="text-center rounded-xl bg-surface/50 p-3">
+              <kpi.icon size={14} className="mx-auto text-muted mb-1" />
+              <p className={`text-[18px] font-bold tracking-tight ${kpi.color}`}>{kpi.value}</p>
+              <p className="text-[8px] font-semibold uppercase tracking-wider text-muted mt-0.5">{kpi.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 2. Workflow Actions */}
+      <div className="rounded-2xl border border-border bg-white p-5">
+        <h3 className="text-[13px] font-semibold mb-4">Workflow Actions</h3>
+        <div className="grid gap-3 grid-cols-6">
+          {[
+            { label: "Add to Board", sub: `${savedProducts.size} products`, icon: Plus, active: addedToBoard.size > 0, onClick: () => { batchAddToBoard(); selectAllProducts(); batchAddToBoard(); } },
+            { label: "Add to Spec", sub: `${savedProducts.size} products`, icon: FileText, active: addedToSpec.size > 0, onClick: () => { batchAddToSpec(); selectAllProducts(); batchAddToSpec(); } },
+            { label: "New Board", sub: "From recommendations", icon: Layers, active: boardCreated, onClick: () => { setBoardCreated(true); addAction("Created board", "From saved products", Layers); } },
+            { label: "New Brief", sub: "From saved profile", icon: Sparkles, active: briefCreated, onClick: () => { setBriefCreated(true); addAction("Created brief", "From saved profile", Sparkles); } },
+            { label: "Export Set", sub: "PDF / CSV", icon: Download, active: exportedSet, onClick: () => { setExportedSet(true); addAction("Exported set", `${savedProducts.size} products`, Download); } },
+            { label: "Share Set", sub: "Invite team", icon: Share2, active: shared, onClick: () => { setShared(true); addAction("Shared set", "Team link created", Share2); } },
+          ].map((action) => (
+            <button key={action.label} onClick={action.onClick}
+              className={`rounded-xl border p-3 text-left transition-all group ${action.active ? "border-foreground bg-foreground/5" : "border-border hover:border-foreground/30 hover:shadow-sm"}`}>
+              <div className="flex items-center justify-between mb-2">
+                <action.icon size={16} className={`${action.active ? "text-foreground" : "text-muted group-hover:text-foreground"} transition-colors`} />
+                {action.active && <CheckCircle2 size={12} className="text-emerald" />}
+              </div>
+              <p className="text-[11px] font-semibold">{action.label}</p>
+              <p className="text-[9px] text-muted mt-0.5">{action.sub}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* 1. Saved Products Workspace + 3. Multi-select + 6. Persistence */}
+      <div className="rounded-2xl border border-border bg-white p-5">
+        <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground"><Bookmark size={16} className="text-white" /></div>
             <div>
               <h2 className="text-[14px] font-semibold">Saved Products</h2>
-              <p className="text-[11px] text-muted">{savedProducts.size} product{savedProducts.size !== 1 ? "s" : ""} saved from matching</p>
+              <p className="text-[11px] text-muted">{savedProducts.size} product{savedProducts.size !== 1 ? "s" : ""} · {selectedProductIds.size} selected</p>
             </div>
           </div>
           {savedProducts.size > 0 && (
-            <div className="flex gap-2">
-              <button className="rounded-lg border border-border px-3 py-1.5 text-[11px] font-medium text-muted hover:bg-surface transition-colors">
-                <Plus size={12} className="inline mr-1" />Add to Board
+            <div className="flex items-center gap-2">
+              <button onClick={selectedProductIds.size === savedProducts.size ? deselectAllProducts : selectAllProducts}
+                className="rounded-lg border border-border px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-surface transition-colors">
+                {selectedProductIds.size === savedProducts.size ? "Deselect All" : "Select All"}
               </button>
-              <button className="rounded-lg bg-foreground px-3 py-1.5 text-[11px] font-medium text-white hover:opacity-90 transition-opacity">
-                <Download size={12} className="inline mr-1" />Convert to Spec
-              </button>
+              {selectedProductIds.size > 0 && (
+                <>
+                  <button onClick={batchAddToBoard} className="flex items-center gap-1 rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">
+                    <Plus size={10} /> Board ({selectedProductIds.size})
+                  </button>
+                  <button onClick={batchAddToSpec} className="flex items-center gap-1 rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">
+                    <FileText size={10} /> Spec ({selectedProductIds.size})
+                  </button>
+                  <button onClick={batchExport} className="flex items-center gap-1 rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">
+                    <Download size={10} /> Export
+                  </button>
+                  <button onClick={batchRemove} className="flex items-center gap-1 rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-rose hover:bg-rose hover:text-white transition-colors">
+                    <Trash2 size={10} /> Remove
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
 
         {savedProducts.size === 0 ? (
-          <div className="rounded-xl border-2 border-dashed border-border py-12 text-center">
-            <Bookmark size={24} className="mx-auto text-muted/40 mb-3" />
-            <p className="text-[13px] font-medium text-muted">No products saved yet</p>
-            <p className="text-[11px] text-muted mt-1">Save products from matching results to see them here</p>
+          <div className="rounded-xl border-2 border-dashed border-border py-10 text-center">
+            <Bookmark size={20} className="mx-auto text-muted/40 mb-2" />
+            <p className="text-[12px] font-medium text-muted">No products saved yet</p>
+            <p className="text-[10px] text-muted mt-0.5">Save products from matching results to build your workspace</p>
           </div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -4133,22 +4297,40 @@ function MatchingActionsSection({ savedProducts, shortlistedArchitects, toggleSa
               const product = products.find((p) => p.id === pid);
               if (!product) return null;
               const momentum = productMomentumData.find((m) => m.productId === pid);
+              const isSelected = selectedProductIds.has(pid);
+              const isComparing = compareProducts.includes(pid);
               return (
-                <div key={pid} className="flex items-center gap-3 rounded-xl border border-border p-3">
-                  <div className="h-12 w-12 rounded-lg bg-surface shrink-0 flex items-center justify-center">
-                    <span className="text-[8px] text-muted">{product.category}</span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[12px] font-semibold truncate">{product.name}</p>
-                    <p className="text-[10px] text-muted">{product.brand}</p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-[11px] font-medium">{product.price}</span>
-                      {momentum && <TrendBadge trend={momentum.trend} />}
+                <div key={pid} className={`rounded-xl border p-3 transition-all ${isSelected ? "border-foreground ring-1 ring-foreground/10 bg-surface/30" : "border-border"} ${isComparing ? "ring-2 ring-blue-500/30" : ""}`}>
+                  <div className="flex items-center gap-3">
+                    <button onClick={() => toggleSelectProduct(pid)}
+                      className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${isSelected ? "bg-foreground border-foreground" : "border-border"}`}>
+                      {isSelected && <Check size={12} className="text-white" />}
+                    </button>
+                    <div className="h-10 w-10 rounded-lg bg-surface shrink-0 flex items-center justify-center">
+                      <span className="text-[7px] text-muted">{product.category}</span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[11px] font-semibold truncate">{product.name}</p>
+                      <p className="text-[9px] text-muted">{product.brand}</p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-[10px] font-medium">{product.price}</span>
+                        {momentum && <TrendBadge trend={momentum.trend} />}
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end gap-1">
+                      <ProductStateBadges pid={pid} />
+                      <div className="flex items-center gap-0.5">
+                        <button onClick={() => toggleCompareProduct(pid)} title="Compare"
+                          className={`rounded p-1 transition-colors ${isComparing ? "bg-blue-500 text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+                          <Scale size={9} />
+                        </button>
+                        <button onClick={() => toggleSaveProduct(pid)} title="Remove"
+                          className="rounded p-1 bg-surface text-muted hover:bg-rose hover:text-white transition-colors">
+                          <Trash2 size={9} />
+                        </button>
+                      </div>
                     </div>
                   </div>
-                  <button onClick={() => toggleSaveProduct(pid)} className="rounded-lg p-1.5 text-muted hover:text-rose transition-colors">
-                    <Bookmark size={14} className="fill-current" />
-                  </button>
                 </div>
               );
             })}
@@ -4156,57 +4338,133 @@ function MatchingActionsSection({ savedProducts, shortlistedArchitects, toggleSa
         )}
       </div>
 
-      {/* Shortlisted Architects */}
-      <div className="rounded-2xl border border-border bg-white p-6">
-        <div className="flex items-center justify-between mb-5">
+      {/* 4. Product Comparison Tray */}
+      {compareProducts.length === 2 && (() => {
+        const [pA, pB] = compareProducts.map((id) => products.find((p) => p.id === id)).filter(Boolean) as Product[];
+        if (!pA || !pB) return null;
+        const momA = productMomentumData.find((m) => m.productId === pA.id);
+        const momB = productMomentumData.find((m) => m.productId === pB.id);
+        const priceA = parsePrice(pA.price);
+        const priceB = parsePrice(pB.price);
+        return (
+          <div className="rounded-2xl border border-blue-200 ring-2 ring-blue-100 bg-white p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Scale size={14} className="text-blue-500" />
+                <h3 className="text-[13px] font-semibold">Product Comparison</h3>
+              </div>
+              <button onClick={() => setCompareProducts([])} className="rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">
+                Clear Comparison
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              {[pA, pB].map((p, i) => {
+                const mom = i === 0 ? momA : momB;
+                const price = i === 0 ? priceA : priceB;
+                return (
+                  <div key={p.id} className="rounded-xl border border-border p-4">
+                    <p className="text-[13px] font-semibold">{p.name}</p>
+                    <p className="text-[10px] text-muted">{p.brand} · {p.category}</p>
+                    <div className="grid grid-cols-3 gap-2 mt-3">
+                      <div className="text-center rounded-lg bg-surface/50 py-2">
+                        <p className="text-[8px] font-semibold uppercase text-muted">Price</p>
+                        <p className="text-[13px] font-bold">{p.price}</p>
+                      </div>
+                      <div className="text-center rounded-lg bg-surface/50 py-2">
+                        <p className="text-[8px] font-semibold uppercase text-muted">Momentum</p>
+                        <p className="text-[13px] font-bold">{mom?.momentumScore ?? "—"}</p>
+                      </div>
+                      <div className="text-center rounded-lg bg-surface/50 py-2">
+                        <p className="text-[8px] font-semibold uppercase text-muted">Trend</p>
+                        {mom ? <TrendBadge trend={mom.trend} /> : <span className="text-[10px] text-muted">—</span>}
+                      </div>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {p.specSheet && <FitBadge label="Spec Sheet" active />}
+                      <FitBadge label={parsePrice(p.price) > 400 ? "Premium" : "Practical"} active />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-3 pt-3 border-t border-border flex items-center justify-center gap-6 text-[10px]">
+              <span>Price Δ: <strong className={priceA > priceB ? "text-rose" : "text-emerald"}>${Math.abs(priceA - priceB).toLocaleString()}</strong></span>
+              {momA && momB && <span>Momentum Δ: <strong>{Math.abs(momA.momentumScore - momB.momentumScore)}</strong></span>}
+              <span>{pA.category === pB.category ? <span className="text-emerald font-semibold">Same category</span> : <span className="text-amber font-semibold">Different categories</span>}</span>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Shortlisted Architects + multi-select */}
+      <div className="rounded-2xl border border-border bg-white p-5">
+        <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
             <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-foreground"><Star size={16} className="text-white" /></div>
             <div>
               <h2 className="text-[14px] font-semibold">Shortlisted Architects</h2>
-              <p className="text-[11px] text-muted">{shortlistedArchitects.size} architect{shortlistedArchitects.size !== 1 ? "s" : ""} shortlisted</p>
+              <p className="text-[11px] text-muted">{shortlistedArchitects.size} architect{shortlistedArchitects.size !== 1 ? "s" : ""} · {selectedArchitectIds.size} selected</p>
             </div>
           </div>
           {shortlistedArchitects.size > 0 && (
-            <button className="rounded-lg bg-foreground px-3 py-1.5 text-[11px] font-medium text-white hover:opacity-90 transition-opacity">
-              <ArrowUpRight size={12} className="inline mr-1" />Send Enquiry
-            </button>
+            <div className="flex items-center gap-2">
+              <button onClick={selectedArchitectIds.size === shortlistedArchitects.size ? deselectAllArchitects : selectAllArchitects}
+                className="rounded-lg border border-border px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-surface transition-colors">
+                {selectedArchitectIds.size === shortlistedArchitects.size ? "Deselect All" : "Select All"}
+              </button>
+              {selectedArchitectIds.size > 0 && (
+                <button onClick={() => { addAction("Sent enquiry", `${selectedArchitectIds.size} architects`, Send); }}
+                  className="flex items-center gap-1 rounded-lg bg-foreground px-3 py-1.5 text-[10px] font-medium text-white hover:opacity-90 transition-opacity">
+                  <Send size={10} /> Send Enquiry ({selectedArchitectIds.size})
+                </button>
+              )}
+            </div>
           )}
         </div>
 
         {shortlistedArchitects.size === 0 ? (
-          <div className="rounded-xl border-2 border-dashed border-border py-12 text-center">
-            <Star size={24} className="mx-auto text-muted/40 mb-3" />
-            <p className="text-[13px] font-medium text-muted">No architects shortlisted</p>
-            <p className="text-[11px] text-muted mt-1">Shortlist architects from matching results to see them here</p>
+          <div className="rounded-xl border-2 border-dashed border-border py-10 text-center">
+            <Star size={20} className="mx-auto text-muted/40 mb-2" />
+            <p className="text-[12px] font-medium text-muted">No architects shortlisted</p>
+            <p className="text-[10px] text-muted mt-0.5">Shortlist architects from matching results</p>
           </div>
         ) : (
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             {[...shortlistedArchitects].map((aid) => {
               const arch = architects.find((a) => a.id === aid);
               if (!arch) return null;
               const influence = architectInfluenceData.find((a) => a.architectId === aid);
+              const isSelected = selectedArchitectIds.has(aid);
+              const isComparing = compareArchitects.includes(aid);
               return (
-                <div key={aid} className="flex items-center gap-4 rounded-xl border border-border p-4">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-full bg-foreground text-[12px] font-bold text-white">
+                <div key={aid} className={`flex items-center gap-3 rounded-xl border p-3 transition-all ${isSelected ? "border-foreground ring-1 ring-foreground/10 bg-surface/30" : "border-border"} ${isComparing ? "ring-2 ring-blue-500/30" : ""}`}>
+                  <button onClick={() => toggleSelectArchitect(aid)}
+                    className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 ${isSelected ? "bg-foreground border-foreground" : "border-border"}`}>
+                    {isSelected && <Check size={12} className="text-white" />}
+                  </button>
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-foreground text-[11px] font-bold text-white shrink-0">
                     {arch.name.split(" ").map((n) => n[0]).join("")}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-[13px] font-semibold">{arch.name}</p>
-                    <p className="text-[11px] text-muted">{arch.firm} · {arch.location}</p>
+                    <p className="text-[12px] font-semibold">{arch.name}</p>
+                    <p className="text-[9px] text-muted">{arch.firm} · {arch.location}</p>
                   </div>
-                  <div className="flex items-center gap-3">
-                    {influence && (
-                      <div className="text-center">
-                        <p className="text-[14px] font-bold">{influence.influenceScore}</p>
-                        <p className="text-[9px] text-muted">Influence</p>
-                      </div>
-                    )}
-                    <div className="flex gap-1.5">
-                      <button className="rounded-lg border border-border px-3 py-1.5 text-[11px] font-medium text-muted hover:bg-surface">View Profile</button>
-                      <button onClick={() => toggleShortlistArchitect(aid)} className="rounded-lg p-1.5 text-muted hover:text-rose transition-colors">
-                        <Star size={14} className="fill-current" />
-                      </button>
+                  {influence && (
+                    <div className="text-center shrink-0">
+                      <p className="text-[13px] font-bold">{influence.influenceScore}</p>
+                      <p className="text-[8px] text-muted">Influence</p>
                     </div>
+                  )}
+                  <div className="flex items-center gap-1 shrink-0">
+                    <span className="rounded-full bg-foreground px-1.5 py-0.5 text-[6px] font-bold text-white">SHORTLISTED</span>
+                    <button onClick={() => toggleCompareArchitect(aid)} title="Compare"
+                      className={`rounded p-1 transition-colors ${isComparing ? "bg-blue-500 text-white" : "bg-surface text-muted hover:bg-foreground hover:text-white"}`}>
+                      <Scale size={9} />
+                    </button>
+                    <button onClick={() => toggleShortlistArchitect(aid)} title="Remove"
+                      className="rounded p-1 bg-surface text-muted hover:bg-rose hover:text-white transition-colors">
+                      <Trash2 size={9} />
+                    </button>
                   </div>
                 </div>
               );
@@ -4215,23 +4473,97 @@ function MatchingActionsSection({ savedProducts, shortlistedArchitects, toggleSa
         )}
       </div>
 
-      {/* Quick Actions */}
-      <div className="rounded-2xl border border-border bg-white p-6">
-        <h2 className="text-[14px] font-semibold mb-4">Quick Actions</h2>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {[
-            { label: "Create Design Board", sub: "From saved products", icon: Layers },
-            { label: "Generate Specification", sub: "From matched products", icon: Download },
-            { label: "Export Match Report", sub: "PDF summary", icon: BarChart3 },
-            { label: "Share with Team", sub: "Invite collaborators", icon: Users },
-          ].map((qa) => (
-            <button key={qa.label} className="rounded-xl border border-border p-4 text-left transition-all hover:border-foreground/30 hover:shadow-sm group">
-              <qa.icon size={18} className="text-muted mb-3 group-hover:text-foreground transition-colors" />
-              <p className="text-[12px] font-semibold">{qa.label}</p>
-              <p className="text-[10px] text-muted mt-0.5">{qa.sub}</p>
+      {/* 4. Architect Comparison Tray */}
+      {compareArchitects.length === 2 && (() => {
+        const [aA, aB] = compareArchitects.map((id) => architects.find((a) => a.id === id)).filter(Boolean) as (typeof architects[number])[];
+        if (!aA || !aB) return null;
+        const infA = architectInfluenceData.find((a) => a.architectId === aA.id);
+        const infB = architectInfluenceData.find((a) => a.architectId === aB.id);
+        return (
+          <div className="rounded-2xl border border-blue-200 ring-2 ring-blue-100 bg-white p-5">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Scale size={14} className="text-blue-500" />
+                <h3 className="text-[13px] font-semibold">Architect Comparison</h3>
+              </div>
+              <button onClick={() => setCompareArchitects([])} className="rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">
+                Clear
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              {[{ arch: aA, inf: infA }, { arch: aB, inf: infB }].map(({ arch, inf }) => (
+                <div key={arch.id} className="rounded-xl border border-border p-4">
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-foreground text-[11px] font-bold text-white">
+                      {arch.name.split(" ").map((n: string) => n[0]).join("")}
+                    </div>
+                    <div>
+                      <p className="text-[12px] font-semibold">{arch.name}</p>
+                      <p className="text-[9px] text-muted">{arch.firm}</p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="text-center rounded-lg bg-surface/50 py-2">
+                      <p className="text-[8px] font-semibold uppercase text-muted">Influence</p>
+                      <p className="text-[13px] font-bold">{inf?.influenceScore ?? "—"}</p>
+                    </div>
+                    <div className="text-center rounded-lg bg-surface/50 py-2">
+                      <p className="text-[8px] font-semibold uppercase text-muted">Projects</p>
+                      <p className="text-[13px] font-bold">{arch.projectCount}</p>
+                    </div>
+                    <div className="text-center rounded-lg bg-surface/50 py-2">
+                      <p className="text-[8px] font-semibold uppercase text-muted">Location</p>
+                      <p className="text-[10px] font-medium truncate">{arch.location}</p>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            {infA && infB && (
+              <div className="mt-3 pt-3 border-t border-border flex items-center justify-center gap-6 text-[10px]">
+                <span>Influence Δ: <strong>{Math.abs(infA.influenceScore - infB.influenceScore)}</strong></span>
+                <span>Projects Δ: <strong>{Math.abs(aA.projectCount - aB.projectCount)}</strong></span>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* 7. Action History */}
+      <div className="rounded-2xl border border-border bg-white p-5">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-surface"><Clock size={14} className="text-muted" /></div>
+          <div>
+            <h3 className="text-[13px] font-semibold">Action History</h3>
+            <p className="text-[10px] text-muted">Recent actions taken in this matching session</p>
+          </div>
+          {actionHistory.length > 0 && (
+            <button onClick={() => setActionHistory([])} className="ml-auto rounded-lg bg-surface px-3 py-1.5 text-[10px] font-medium text-muted hover:bg-foreground hover:text-white transition-colors">
+              Clear History
             </button>
-          ))}
+          )}
         </div>
+
+        {actionHistory.length === 0 ? (
+          <div className="rounded-xl border-2 border-dashed border-border py-8 text-center">
+            <Clock size={18} className="mx-auto text-muted/40 mb-2" />
+            <p className="text-[11px] text-muted">No actions taken yet</p>
+            <p className="text-[9px] text-muted mt-0.5">Actions like saving, adding to board, exporting will appear here</p>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {actionHistory.map((entry) => (
+              <div key={entry.id} className="flex items-center gap-3 rounded-lg bg-surface/30 px-3 py-2">
+                <entry.icon size={12} className="text-muted shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <span className="text-[10px] font-semibold">{entry.action}</span>
+                  <span className="text-[10px] text-muted"> · {entry.target}</span>
+                </div>
+                <span className="text-[9px] text-muted shrink-0">{entry.timestamp}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
